@@ -1,6 +1,7 @@
 """
 CDN_Captain Watchdog
-Monitors bot.py and automatically restarts it if it crashes or exits unexpectedly.
+Keeps the bot running — restarts it if it crashes, and silently auto-updates
+bot.py and watchdog.py from GitHub whenever a new release is published.
 Run this instead of bot.py directly.
 """
 
@@ -8,65 +9,194 @@ import subprocess
 import sys
 import time
 import os
-from datetime import datetime
+import json
+import urllib.request
+from datetime import datetime, timezone
 
+# ─────────────────────────────────────────────
+#  Version & update config
+# ─────────────────────────────────────────────
+CURRENT_VERSION     = "v1.0.1"
+GITHUB_API          = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
+RAW_BASE            = "https://raw.githubusercontent.com/InfamousMorningstar/CDN_Captain-bot/main"
+UPDATE_FILES        = ["bot.py", "watchdog.py", "requirements.txt"]
+UPDATE_CHECK_EVERY  = 3600   # re-check for updates every hour (seconds)
+
+# ─────────────────────────────────────────────
+#  Watchdog config
+# ─────────────────────────────────────────────
 BOT_SCRIPT      = "bot.py"
-RESTART_DELAY   = 5     # seconds to wait before restarting after a crash
+RESTART_DELAY   = 5     # seconds between crash restarts
 MAX_RESTARTS    = 10    # max restarts within RESTART_WINDOW before giving up
-RESTART_WINDOW  = 300   # seconds (5 minutes) — if too many crashes, stop retrying
+RESTART_WINDOW  = 300   # 5-minute crash window
 LOG_FILE        = "watchdog.log"
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-def log(msg: str):
-    ts  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+# ─────────────────────────────────────────────
+#  Logging
+# ─────────────────────────────────────────────
+def log(msg: str) -> None:
+    ts   = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     line = f"[{ts}] {msg}"
     print(line)
     try:
-        with open(LOG_FILE, "a", encoding="utf-8") as f:
+        with open(os.path.join(BASE_DIR, LOG_FILE), "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except OSError:
         pass
 
 
-def main():
-    python   = sys.executable
-    script   = os.path.join(os.path.dirname(__file__), BOT_SCRIPT)
-    restarts = []
+# ─────────────────────────────────────────────
+#  Auto-updater
+# ─────────────────────────────────────────────
+def _fetch_latest_release() -> dict | None:
+    """Hit the GitHub Releases API and return the JSON payload, or None on failure."""
+    try:
+        req = urllib.request.Request(
+            GITHUB_API,
+            headers={
+                "Accept":     "application/vnd.github+json",
+                "User-Agent": f"CDN-Captain-Watchdog/{CURRENT_VERSION}",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return json.loads(resp.read().decode())
+    except Exception as exc:
+        log(f"⚠️  Could not reach GitHub to check for updates: {exc}")
+        return None
 
-    log(f"🐕 Watchdog started — monitoring {BOT_SCRIPT}")
-    log(f"   Python: {python}")
-    log(f"   Script: {script}")
+
+def check_and_apply_update() -> bool:
+    """
+    Compare the latest GitHub release tag against CURRENT_VERSION.
+    If newer: download all UPDATE_FILES from GitHub raw, replace local copies,
+    run pip install if requirements.txt changed, and return True if watchdog.py
+    itself was updated (so the caller can restart the watchdog process).
+    Returns False when already up to date or on any failure.
+    """
+    data = _fetch_latest_release()
+    if not data:
+        return False
+
+    latest_tag = data.get("tag_name", "").strip()
+    if not latest_tag or latest_tag == CURRENT_VERSION:
+        return False   # already on the latest version
+
+    log(f"⬆️  New version available: {latest_tag}  (running {CURRENT_VERSION})")
+    log("   Downloading updates in the background — bot will restart once ready...")
+
+    watchdog_updated      = False
+    requirements_updated  = False
+
+    for fname in UPDATE_FILES:
+        url  = f"{RAW_BASE}/{fname}"
+        dest = os.path.join(BASE_DIR, fname)
+        tmp  = dest + ".new"
+        bak  = dest + ".bak"
+
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                content = resp.read()
+
+            # Write to a temp file first — never leave a half-written script
+            with open(tmp, "wb") as f:
+                f.write(content)
+
+            # Rotate: old → .bak, new → current
+            if os.path.exists(bak):
+                os.remove(bak)
+            if os.path.exists(dest):
+                os.rename(dest, bak)
+            os.rename(tmp, dest)
+
+            log(f"   ✔ {fname} updated")
+
+            if fname == "watchdog.py":
+                watchdog_updated = True
+            if fname == "requirements.txt":
+                requirements_updated = True
+
+        except Exception as exc:
+            log(f"   ⚠️  Could not update {fname}: {exc}")
+            # Clean up temp file so a bad download doesn't corrupt the install
+            if os.path.exists(tmp):
+                try:
+                    os.remove(tmp)
+                except OSError:
+                    pass
+
+    # Re-run pip if dependencies changed
+    if requirements_updated:
+        log("   Installing any new dependencies...")
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r",
+                 os.path.join(BASE_DIR, "requirements.txt"), "--quiet"],
+                check=False,
+            )
+            log("   ✔ Dependencies up to date")
+        except Exception as exc:
+            log(f"   ⚠️  pip install failed: {exc}")
+
+    log(f"✅ Updated to {latest_tag}")
+    return watchdog_updated
+
+
+# ─────────────────────────────────────────────
+#  Main loop
+# ─────────────────────────────────────────────
+def main() -> None:
+    python   = sys.executable
+    script   = os.path.join(BASE_DIR, BOT_SCRIPT)
+    restarts: list[float] = []
+    last_update_check     = 0.0
+
+    log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    log(f"  CDN_Captain Watchdog  ·  {CURRENT_VERSION}")
+    log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     while True:
         now = time.time()
 
-        # Prune old restart timestamps outside the window
-        restarts = [t for t in restarts if now - t < RESTART_WINDOW]
+        # ── Update check (on startup and every UPDATE_CHECK_EVERY seconds) ──
+        if now - last_update_check >= UPDATE_CHECK_EVERY:
+            last_update_check = now
+            watchdog_changed = check_and_apply_update()
+            if watchdog_changed:
+                # watchdog.py itself was replaced — spawn the new version and exit
+                log("🔄 Watchdog updated — restarting with new version...")
+                subprocess.Popen([python, os.path.join(BASE_DIR, "watchdog.py")])
+                sys.exit(0)
 
+        # ── Crash-loop guard ─────────────────────────────────────────────────
+        restarts = [t for t in restarts if now - t < RESTART_WINDOW]
         if len(restarts) >= MAX_RESTARTS:
-            log(f"❌ Too many restarts ({MAX_RESTARTS}) in {RESTART_WINDOW}s — giving up.")
-            log("   Check the logs above for repeated errors before restarting manually.")
+            log(f"❌ Too many crashes ({MAX_RESTARTS} in {RESTART_WINDOW}s) — stopping.")
+            log("   Fix the error above and restart the watchdog manually.")
             sys.exit(1)
 
-        log(f"🚀 Starting bot.py (restart #{len(restarts) + 1} in window)...")
+        # ── Start the bot ────────────────────────────────────────────────────
+        attempt = len(restarts) + 1
+        log(f"🚀 Starting bot.py  (run #{attempt} in window)...")
         start_time = time.time()
 
         try:
-            proc = subprocess.run([python, script], check=False)
+            proc        = subprocess.run([python, script], check=False)
             exit_code   = proc.returncode
             run_seconds = int(time.time() - start_time)
 
             if exit_code == 0:
-                log(f"✅ Bot exited cleanly (code 0) after {run_seconds}s — not restarting.")
+                log(f"✅ Bot exited cleanly after {run_seconds}s — watchdog stopping.")
                 break
             else:
-                log(f"⚠️  Bot exited with code {exit_code} after {run_seconds}s")
+                log(f"⚠️  Bot crashed (exit code {exit_code}) after {run_seconds}s")
                 restarts.append(time.time())
-                log(f"🔄 Restarting in {RESTART_DELAY}s... ({len(restarts)}/{MAX_RESTARTS} restarts in window)")
+                log(f"   Restarting in {RESTART_DELAY}s...  ({len(restarts)}/{MAX_RESTARTS} crashes in window)")
                 time.sleep(RESTART_DELAY)
 
         except KeyboardInterrupt:
-            log("🛑 Watchdog stopped by user (Ctrl+C)")
+            log("🛑 Stopped by user (Ctrl+C)")
             break
         except Exception as exc:
             log(f"❌ Watchdog error: {exc}")

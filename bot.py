@@ -100,8 +100,8 @@ CDN_WEBSITE       = "https://cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
 CURRENT_VERSION   = "v1.0.1"
-GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot-/releases/latest"
-GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot-/releases/latest"
+GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
+GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
 
 # Update check state

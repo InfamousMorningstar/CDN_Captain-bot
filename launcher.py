@@ -25,7 +25,7 @@ import json
 
 # ── GitHub source ─────────────────────────────────────────────────────────────
 GITHUB_USER   = "InfamousMorningstar"
-GITHUB_REPO   = "CDN_Captain-bot-"
+GITHUB_REPO   = "CDN_Captain-bot"
 GITHUB_BRANCH = "main"
 RAW_BASE      = f"https://raw.githubusercontent.com/{GITHUB_USER}/{GITHUB_REPO}/{GITHUB_BRANCH}"
 BOT_FILES     = ["bot.py", "watchdog.py", "requirements.txt"]
