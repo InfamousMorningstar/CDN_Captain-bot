@@ -32,6 +32,7 @@ RESTART_WINDOW  = 300   # 5-minute crash window
 LOG_FILE        = "watchdog.log"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+PID_FILE = os.path.join(BASE_DIR, "watchdog.pid")
 
 # ─────────────────────────────────────────────
 #  Logging
@@ -156,6 +157,13 @@ def main() -> None:
     log(f"  CDN_Captain Watchdog  ·  {CURRENT_VERSION}")
     log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
+    # Write PID so the installer can kill this process before launching a new one
+    try:
+        with open(PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError:
+        pass
+
     while True:
         now = time.time()
 
@@ -202,6 +210,13 @@ def main() -> None:
             log(f"❌ Watchdog error: {exc}")
             restarts.append(time.time())
             time.sleep(RESTART_DELAY)
+
+    # Clean up PID file on exit
+    try:
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
