@@ -33,6 +33,14 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
+CURRENT_VERSION   = "v1.0.0"
+GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot-/releases/latest"
+GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot-/releases/latest"
+PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
+
+# Update check state
+_update_available: bool = False
+
 USER_COOLDOWN_SECONDS       = 30
 CONTEXT_MESSAGE_LIMIT       = 75
 MAX_PAGES_TO_CRAWL          = 200
@@ -1371,9 +1379,35 @@ async def _send_with_retry(coro_fn, max_retries: int = 3) -> discord.Message:
     raise RuntimeError("Max retries exceeded")
 
 
+async def _update_check_loop():
+    """Background task: check GitHub for a newer release every hour."""
+    global _update_available
+    await asyncio.sleep(10)  # brief delay after startup
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    GITHUB_RELEASES_API,
+                    headers={"Accept": "application/vnd.github+json"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        latest = data.get("tag_name", "")
+                        _update_available = latest not in ("", CURRENT_VERSION)
+                        if _update_available:
+                            print(f"[Update] ⬆️  New version available: {latest} (running {CURRENT_VERSION})")
+        except Exception as exc:
+            print(f"[Update] ⚠️  Check failed: {exc}")
+        await asyncio.sleep(3600)  # re-check every hour
+
+
 async def _send_answer(message: discord.Message, answer: str) -> discord.Message:
-    """Send a reply with rate-limit retry."""
-    sent = await _send_with_retry(lambda: message.reply(answer, mention_author=True))
+    """Send a reply with rate-limit retry. Appends branding footer and update notice."""
+    footer = f"\n-# Engineered by [Morningstar.0]({PORTFOLIO_URL})"
+    if _update_available:
+        footer += f" · ⬆️ [Bot update available]({GITHUB_RELEASES_URL})"
+    sent = await _send_with_retry(lambda: message.reply(answer + footer, mention_author=True))
     print(f"[Bot] 💬 Replied ({len(answer.split())} words)")
     return sent
 
@@ -1444,6 +1478,7 @@ async def on_ready():
     if _bot_paused:
         print("[Bot] ⏸️  Starting in paused state (restored from DB)")
     bot.loop.create_task(_auto_crawl_loop())
+    bot.loop.create_task(_update_check_loop())
     await crawl_site(None)
     await extract_structured_knowledge()
     await parse_wipe_schedule()
