@@ -99,7 +99,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.1.2"
+CURRENT_VERSION   = "v1.1.3"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -1469,7 +1469,7 @@ async def _update_check_loop():
 
 async def _send_answer(message: discord.Message, answer: str) -> discord.Message:
     """Send a reply with rate-limit retry. Appends branding footer and update notice."""
-    footer = f"\n-# Engineered by [Morningstar.0]({PORTFOLIO_URL})"
+    footer = f"\n-# Engineered by [Morningstar.0](<{PORTFOLIO_URL}>)"
     if _update_available:
         footer += f" · ⬆️ [Bot update available]({GITHUB_RELEASES_URL})"
     sent = await _send_with_retry(lambda: message.reply(answer + footer, mention_author=True))

@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 # ─────────────────────────────────────────────
 #  Version & update config
 # ─────────────────────────────────────────────
-CURRENT_VERSION     = "v1.1.2"
+CURRENT_VERSION     = "v1.1.3"
 GITHUB_API          = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 RAW_BASE            = "https://raw.githubusercontent.com/InfamousMorningstar/CDN_Captain-bot/main"
 UPDATE_FILES        = ["bot.py", "watchdog.py", "requirements.txt"]
