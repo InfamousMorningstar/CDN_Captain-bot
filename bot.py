@@ -159,6 +159,7 @@ KEYWORD_EXPANSIONS: dict[str, set[str]] = {
 
 REFERENCE_CHANNEL_ID        = 1340937408434405437
 REFERENCE_CHANNEL_LINK      = "https://discord.com/channels/1076024408503762974/1340937408434405437"
+TICKET_CHANNEL_ID           = 1340937937940119602
 REFERENCE_CHANNEL_MSG_LIMIT = 120
 REF_CHANNEL_CACHE_TTL       = 1800
 
@@ -180,7 +181,7 @@ ADMIN_TAG_RESPONSE = (
     f"🌐 **Check the website first** — **https://cdndayz.com** has all the rules, FAQs, and info you need!\n"
     f"📋 **Server rules & info** are also in <#{REFERENCE_CHANNEL_ID}>\n"
     "💬 **Still have a question?** Ask it here — a community member or I might be able to help!\n"
-    "🎫 **Need staff support?** Open a ticket instead.\n"
+    f"🎫 **Need staff support?** Open a ticket in <#{TICKET_CHANNEL_ID}>\n"
     "🚫 **Please don't DM the admins either** — tickets are the best way to reach them.\n\n"
     "Thanks for keeping the server tidy! 😊"
 )
@@ -1079,6 +1080,7 @@ async def evaluate_and_answer(
 • Every user messaging you is ALREADY in this Discord server
 • NEVER say "join the Discord", "join CDN Discord", or "join the server" — they are already here
 • Point people to specific channels like <#{REFERENCE_CHANNEL_ID}> or the website
+• If someone needs staff support, direct them to open a ticket in <#{TICKET_CHANNEL_ID}> — that is the ONLY correct ticket channel
 • You are active in the #{channel_name} channel right now
 
 ━━ YOUR KNOWLEDGE SOURCES ━━
