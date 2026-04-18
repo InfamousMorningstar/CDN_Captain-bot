@@ -26,6 +26,72 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─────────────────────────────────────────────
+#  Console output  (human-readable, coloured)
+# ─────────────────────────────────────────────
+from datetime import datetime, timezone
+
+_RST  = "\033[0m"
+_BOLD = "\033[1m"
+_GRN  = "\033[92m"
+_YLW  = "\033[93m"
+_RED  = "\033[91m"
+_CYN  = "\033[96m"
+_PRP  = "\033[95m"
+_GRY  = "\033[90m"
+_WHT  = "\033[97m"
+
+_LEVEL_ICON = {
+    "ok":    f"{_GRN}✔ {_RST}",
+    "warn":  f"{_YLW}⚠ {_RST}",
+    "error": f"{_RED}✖ {_RST}",
+    "info":  f"{_CYN}· {_RST}",
+    "skip":  f"{_GRY}· {_RST}",
+    "msg":   f"{_CYN}◆ {_RST}",
+    "crawl": f"{_YLW}⟳ {_RST}",
+}
+_LEVEL_COL = {
+    "ok":    _GRN,
+    "warn":  _YLW,
+    "error": _RED,
+    "info":  _WHT,
+    "skip":  _GRY,
+    "msg":   _CYN,
+    "crawl": _YLW,
+}
+
+
+def _ts() -> str:
+    return datetime.now(timezone.utc).strftime("%H:%M:%S")
+
+
+def _log(msg: str, level: str = "info") -> None:
+    """Print a timestamped, human-readable line to the console."""
+    ts   = f"{_GRY}{_ts()}{_RST}"
+    icon = _LEVEL_ICON.get(level, "  ")
+    col  = _LEVEL_COL.get(level, _WHT)
+    print(f"  {ts}  {icon}{col}{msg}{_RST}")
+
+
+def _print_banner() -> None:
+    """Startup header — printed when the bot first connects."""
+    print()
+    print(f"  {_GRN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{_RST}")
+    print(f"  {_GRN}  {_BOLD}CDN_Captain{_RST}  {_GRN}·  {CURRENT_VERSION}  ·  cdndayz.com{_RST}")
+    print(f"  {_GRN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{_RST}")
+    print()
+
+
+def _print_ready(guild_name: str) -> None:
+    """'All systems go' banner — printed after full startup completes."""
+    print()
+    print(f"  {_GRN}{_BOLD}  ✅  CDN_Captain is LIVE  ·  {guild_name}{_RST}")
+    print(f"  {_GRY}     Watching all channels — ready to answer questions{_RST}")
+    print()
+    print(f"  {_GRY}── Live Activity ───────────────────────────────────────────────────{_RST}")
+    print()
+
+
+# ─────────────────────────────────────────────
 #  Configuration
 # ─────────────────────────────────────────────
 DISCORD_TOKEN     = os.getenv("DISCORD_TOKEN")
@@ -33,7 +99,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.0.0"
+CURRENT_VERSION   = "v1.0.1"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot-/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot-/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -150,7 +216,7 @@ async def init_db() -> None:
             )
         """)
         await db.commit()
-    print("[DB] ✅ memory.db ready")
+    _log("Answer memory is ready  (memory.db)", "ok")
 
 
 async def db_get_state(key: str, default: str = "") -> str:
@@ -341,7 +407,7 @@ async def fetch_reference_channel() -> str:
         return _ref_cache
     channel = bot.get_channel(REFERENCE_CHANNEL_ID)
     if not channel or not isinstance(channel, discord.TextChannel):
-        print(f"[RefChannel] ⚠️ Cannot find channel {REFERENCE_CHANNEL_ID}")
+        _log(f"Cannot find the reference channel  (ID: {REFERENCE_CHANNEL_ID})", "warn")
         return ""
     lines: list[str] = []
     try:
@@ -349,12 +415,12 @@ async def fetch_reference_channel() -> str:
             if msg.content.strip():
                 lines.append(msg.content.strip())
     except discord.Forbidden:
-        print("[RefChannel] ⚠️ No read permission")
+        _log("No permission to read the reference channel", "warn")
         return ""
     result = "\n".join(lines)
     _ref_cache      = result
     _ref_cache_time = now
-    print(f"[RefChannel] ✅ Loaded {len(lines)} messages")
+    _log(f"Reference channel ready  —  {len(lines)} message{'s' if len(lines) != 1 else ''} loaded", "ok")
     return result
 
 
@@ -404,7 +470,7 @@ async def _fetch_page_js(browser: Browser, url: str) -> tuple[str, str]:
         html = await page.content()
         return url, html
     except Exception as exc:
-        print(f"[Crawler] ✗ {url} ({exc})")
+        _log(f"Could not load page:  {url}  ({exc})", "warn")
         return url, ""
     finally:
         if page:
@@ -424,7 +490,7 @@ async def crawl_site(session: aiohttp.ClientSession | None) -> None:
         if _page_store and (time.time() - _crawl_done_time) < CRAWL_CACHE_TTL:
             return
 
-        print("[Crawler] 🔍 Crawling cdndayz.com (with JS rendering) ...")
+        _log("Reading cdndayz.com  —  loading all pages (renders JavaScript, takes ~15 seconds)...", "crawl")
         start      = time.time()
         visited:   set[str]       = set()
         queue:     list[str]      = [CDN_WEBSITE.rstrip("/")]
@@ -465,7 +531,7 @@ async def crawl_site(session: aiohttp.ClientSession | None) -> None:
         _page_store.clear()
         _page_store.update(new_store)
         _crawl_done_time = time.time()
-        print(f"[Crawler] ✅ {len(_page_store)} pages in {round(time.time()-start,1)}s")
+        _log(f"Website ready  —  {len(_page_store)} pages loaded in {round(time.time()-start,1)}s", "ok")
 
 
 # ─────────────────────────────────────────────
@@ -520,9 +586,9 @@ Website content:
             messages=[{"role": "user", "content": prompt}],
         )
         _structured_knowledge = resp.content[0].text.strip()
-        print(f"[Knowledge] ✅ Extracted {len(_structured_knowledge.splitlines())} structured facts")
+        _log(f"Facts ready  —  {len(_structured_knowledge.splitlines())} rules, schedules & server details extracted", "ok")
     except Exception as exc:
-        print(f"[Knowledge] ⚠️ Extraction failed: {exc}")
+        _log(f"Could not extract facts from website:  {exc}", "warn")
 
 
 # ─────────────────────────────────────────────
@@ -548,13 +614,12 @@ async def parse_wipe_schedule() -> None:
         if any(kw in text.lower() for kw in wipe_keywords)
     ]
     if not wipe_pages:
-        print("[Wipe] No wipe-related pages found")
+        _log("No wipe schedule found on the website", "warn")
         return
 
     combined = "\n\n---\n\n".join(f"[{url}]\n{text}" for url, text in wipe_pages[:5])
 
-    from datetime import datetime
-    now_str = datetime.utcnow().strftime("%A %d %B %Y %H:%M UTC")
+    now_str = datetime.now(timezone.utc).strftime("%A %d %B %Y %H:%M UTC")
 
     prompt = f"""Today's date/time (UTC): {now_str}
 
@@ -579,9 +644,9 @@ Website content:
             messages=[{"role": "user", "content": prompt}],
         )
         _wipe_info = resp.content[0].text.strip()
-        print(f"[Wipe] ✅ Schedule parsed: {_wipe_info[:100]}...")
+        _log(f"Wipe schedule ready  —  {_wipe_info[:80]}{'...' if len(_wipe_info) > 80 else ''}", "ok")
     except Exception as exc:
-        print(f"[Wipe] ⚠️ Parse failed: {exc}")
+        _log(f"Could not calculate wipe schedule:  {exc}", "warn")
 
 
 async def _detect_and_announce_changes(new_store: dict[str, str]) -> None:
@@ -609,7 +674,7 @@ async def _detect_and_announce_changes(new_store: dict[str, str]) -> None:
     if not changed_pages:
         return
 
-    print(f"[ChangeDetect] 🔔 {len(changed_pages)} page(s) changed: {changed_pages}")
+    _log(f"Website updated!  —  {len(changed_pages)} page{'s' if len(changed_pages) != 1 else ''} changed since the last check", "warn")
 
     channel = bot.get_channel(CHANGE_ALERT_CHANNEL_ID)
     if not channel or not isinstance(channel, discord.TextChannel):
@@ -637,7 +702,7 @@ async def _auto_crawl_loop():
     await bot.wait_until_ready()
     while not bot.is_closed():
         await asyncio.sleep(AUTO_CRAWL_INTERVAL)
-        print("[AutoCrawl] 🔄 Scheduled re-crawl starting...")
+        _log("Scheduled refresh  —  re-reading cdndayz.com and updating knowledge...", "crawl")
         global _crawl_done_time
         _crawl_done_time = 0  # force refresh
         await crawl_site(None)
@@ -877,13 +942,13 @@ def get_all_image_attachments(message: discord.Message) -> list:
         ct  = (att.content_type or "").lower().split(";")[0].strip()
         ext = os.path.splitext(att.filename.lower())[1]
         if ct in SUPPORTED_IMAGE_TYPES or ext in EXT_TO_MEDIA_TYPE:
-            print(f"[Image] Found attachment: {att.filename} ({ct or ext})")
+            _log(f"Reading screenshot:  {att.filename}", "skip")
             images.append(att)
 
     # 2. Image embeds
     for embed in message.embeds:
         if embed.type == "image" and embed.url:
-            print(f"[Image] Found image embed: {embed.url}")
+            _log(f"Reading image from embed:  {embed.url}", "skip")
             class _EmbedImageProxy:
                 url      = embed.url
                 filename = embed.url.split("?")[0].split("/")[-1] or "image.png"
@@ -903,7 +968,7 @@ async def download_image(url: str, session: aiohttp.ClientSession) -> tuple[str,
             data       = await resp.read()
             return base64.standard_b64encode(data).decode("utf-8"), media_type
     except Exception as exc:
-        print(f"[Image] Download failed: {exc}")
+        _log(f"Screenshot download failed:  {exc}", "warn")
         return None
 
 
@@ -1147,7 +1212,7 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
 
         # Silent check
         if raw.upper().startswith(NO_ANSWER):
-            print(f"[Bot] ⏭️  Silent — \"{label}\"")
+            _log(f"Stayed silent  —  \"{label}\"", "skip")
             return None
 
         # Parse optional CONFIDENCE:X header
@@ -1158,11 +1223,11 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
             confidence = int(conf_match.group(1))
             answer     = conf_match.group(2).strip()
             if confidence < 6:
-                print(f"[Bot] ⏭️  Low confidence ({confidence}/10) — staying silent: \"{label}\"")
+                _log(f"Not confident enough to answer ({confidence}/10)  —  \"{label}\"", "skip")
                 return None
-            print(f"[Bot] ✅ Confidence {confidence}/10 — answering: \"{label}\"")
+            _log(f"Answering  (confidence {confidence}/10)  —  \"{label}\"", "ok")
         else:
-            print(f"[Bot] ✅ Answering (no confidence score) — \"{label}\"")
+            _log(f"Answering  —  \"{label}\"", "ok")
 
         # Re-check after stripping confidence header
         if not answer or answer.upper().startswith(NO_ANSWER):
@@ -1172,10 +1237,10 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
         evaluate_and_answer._last_confidence = confidence
         return answer
     except anthropic.APIError as exc:
-        print(f"[Claude] API error: {exc}")
+        _log(f"AI API error:  {exc}", "error")
         return None
     except Exception as exc:
-        print(f"[Claude] Error: {exc}")
+        _log(f"AI error:  {exc}", "error")
         return None
 
 
@@ -1351,10 +1416,10 @@ Recent channel context:
             messages=[{"role": "user", "content": user_content}],
         )
         answer = resp.content[0].text.strip()
-        print(f"[Sidekick] 🤝 Answered Infamous_Morningstar: \"{content[:60]}\"")
+        _log(f"Personal assistant  —  replied to {message.author.display_name}:  \"{content[:55]}\"", "ok")
         return answer
     except Exception as exc:
-        print(f"[Sidekick] Error: {exc}")
+        _log(f"Personal assistant error:  {exc}", "error")
         return None
 
 
@@ -1372,7 +1437,7 @@ async def _send_with_retry(coro_fn, max_retries: int = 3) -> discord.Message:
         except discord.errors.HTTPException as exc:
             if exc.status == 429 and attempt < max_retries:
                 retry_after = getattr(exc, "retry_after", None) or (2 ** attempt)
-                print(f"[RateLimit] ⏳ Rate limited — retrying in {retry_after:.1f}s (attempt {attempt}/{max_retries})")
+                _log(f"Discord rate limit — waiting {retry_after:.1f}s before retrying  (attempt {attempt}/{max_retries})", "warn")
                 await asyncio.sleep(retry_after)
             else:
                 raise
@@ -1396,9 +1461,9 @@ async def _update_check_loop():
                         latest = data.get("tag_name", "")
                         _update_available = latest not in ("", CURRENT_VERSION)
                         if _update_available:
-                            print(f"[Update] ⬆️  New version available: {latest} (running {CURRENT_VERSION})")
+                            _log(f"Update available!  {latest} is out  (you're running {CURRENT_VERSION})  →  {GITHUB_RELEASES_URL}", "warn")
         except Exception as exc:
-            print(f"[Update] ⚠️  Check failed: {exc}")
+            _log(f"Could not check for updates:  {exc}", "warn")
         await asyncio.sleep(3600)  # re-check every hour
 
 
@@ -1408,7 +1473,7 @@ async def _send_answer(message: discord.Message, answer: str) -> discord.Message
     if _update_available:
         footer += f" · ⬆️ [Bot update available]({GITHUB_RELEASES_URL})"
     sent = await _send_with_retry(lambda: message.reply(answer + footer, mention_author=True))
-    print(f"[Bot] 💬 Replied ({len(answer.split())} words)")
+    _log(f"Replied  ({len(answer.split())} words)", "ok")
     return sent
 
 
@@ -1453,7 +1518,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
         return  # Not a bot answer we logged
 
     correct = str(payload.emoji) == "✅"
-    print(f"[Feedback] {'✅ Correct' if correct else '❌ Wrong'} marked by {member.display_name}: \"{question[:60]}\"")
+    _log(f"{'Answer confirmed correct' if correct else 'Answer marked as wrong'}  by {member.display_name}  —  \"{question[:60]}\"", "ok" if correct else "warn")
 
     if not correct:
         # Delete the wrong answer to clean up the channel
@@ -1462,27 +1527,35 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             if channel:
                 msg = await channel.fetch_message(payload.message_id)
                 await msg.delete()
-                print(f"[Feedback] 🗑️  Deleted wrong answer")
+                _log("Wrong answer deleted from the channel", "ok")
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
 
 @bot.event
 async def on_ready():
-    print(f"✅  {bot.user} ({BOT_NAME}) is online!")
+    _print_banner()
+    _log(f"Connected to Discord as {bot.user}  ·  {BOT_NAME}", "ok")
     for guild in bot.guilds:
-        print(f"   → {guild.name} ({guild.id})")
+        _log(f"Joined server:  {guild.name}", "info")
+    _log("Setting up answer memory...", "info")
     await init_db()
     global _bot_paused
     _bot_paused = await get_paused()
     if _bot_paused:
-        print("[Bot] ⏸️  Starting in paused state (restored from DB)")
+        _log("Starting in PAUSED mode  —  bot will not respond to the server", "warn")
     bot.loop.create_task(_auto_crawl_loop())
     bot.loop.create_task(_update_check_loop())
+    _log("Loading website knowledge...", "info")
     await crawl_site(None)
+    _log("Extracting rules, facts & server info...", "info")
     await extract_structured_knowledge()
+    _log("Calculating wipe schedule...", "info")
     await parse_wipe_schedule()
+    _log("Loading reference channel...", "info")
     await fetch_reference_channel()
+    guild_name = bot.guilds[0].name if bot.guilds else "Unknown Server"
+    _print_ready(guild_name)
 
 
 @bot.event
@@ -1509,7 +1582,8 @@ async def on_message(message: discord.Message):
     has_images    = bool(img_attachments)
     channel_name  = getattr(message.channel, "name", "unknown")
 
-    print(f"[Msg] #{channel_name} | {message.author.display_name}: \"{content[:60]}\" | images={len(img_attachments)}")
+    img_note = f"  +{len(img_attachments)} image{'s' if len(img_attachments) != 1 else ''}" if img_attachments else ""
+    _log(f"#{channel_name}  ·  {message.author.display_name}:  \"{content[:55]}\"{img_note}", "msg")
 
     # ── Sidekick mode — owner only ────────────────────────────────────────────
     if is_sidekick_trigger(message):
@@ -1520,7 +1594,7 @@ async def on_message(message: discord.Message):
         if any(p in msg_lower for p in PAUSE_PHRASES):
             _bot_paused = True
             await set_paused(True)
-            print("[Bot] ⏸️  Paused by owner")
+            _log("Bot paused  —  will no longer respond to the server", "warn")
             try:
                 resp = await anthropic_client.messages.create(
                     model="claude-sonnet-4-6",
@@ -1542,7 +1616,7 @@ async def on_message(message: discord.Message):
         if any(p in msg_lower for p in RESUME_PHRASES):
             _bot_paused = False
             await set_paused(False)
-            print("[Bot] ▶️  Resumed by owner")
+            _log("Bot resumed  —  back to watching all channels", "ok")
             try:
                 resp = await anthropic_client.messages.create(
                     model="claude-sonnet-4-6",
@@ -1575,7 +1649,7 @@ async def on_message(message: discord.Message):
             try:
                 await _send_with_retry(lambda: message.reply(answer, mention_author=True))
             except discord.HTTPException as exc:
-                print(f"[Sidekick] Reply failed: {exc}")
+                _log(f"Personal assistant reply failed:  {exc}", "error")
         return
 
     # ── Pause guard — ignore everyone else when paused ────────────────────────
@@ -1595,7 +1669,7 @@ async def on_message(message: discord.Message):
         if not is_question(content):
             return
         if is_directed_at_someone(message):
-            print(f"[Bot] ⏭️  Reply-to-user — skipping: \"{content[:60]}\"")
+            _log(f"Skipped  —  message is a reply to someone else", "skip")
             return
 
     # Cooldown (per user)
@@ -1606,7 +1680,7 @@ async def on_message(message: discord.Message):
 
     # Deduplication: skip if very similar question was answered recently in this channel
     if not has_images and await db_is_recently_answered(message.channel.id, content):
-        print(f"[Bot] ⏭️  Duplicate question (answered recently) — skipping: \"{content[:60]}\"")
+        _log(f"Skipped  —  this question was already answered recently", "skip")
         return
 
     # Fetch conversation context
@@ -1621,11 +1695,11 @@ async def on_message(message: discord.Message):
         pass
     except discord.errors.DiscordServerError as exc:
         # Discord returned a 503 / temporary server error — skip this message silently
-        print(f"[Bot] ⚠️  Discord 503 fetching history, skipping message: {exc}")
+        _log(f"Discord server error fetching channel history, skipping:  {exc}", "warn")
         return
     except Exception as exc:
         # Any other unexpected network/API error — log and skip rather than crash
-        print(f"[Bot] ⚠️  Unexpected error fetching history: {exc}")
+        _log(f"Unexpected error reading channel history:  {exc}", "warn")
         return
     recent_msgs.reverse()
 
@@ -1634,7 +1708,7 @@ async def on_message(message: discord.Message):
 
     # Don't interrupt two-person convos unless they shared an image
     if two_person and not has_images:
-        print(f"[Bot] ⏭️  Two-person convo — skipping: \"{content[:60]}\"")
+        _log("Skipped  —  two people are mid-conversation", "skip")
         return
 
     # Fetch reply chain + check if this is a follow-up to a previous bot answer
@@ -1659,7 +1733,7 @@ async def on_message(message: discord.Message):
                 if data:
                     image_data_list.append(data)
         if not image_data_list:
-            print("[Bot] ⚠️  All image downloads failed — skipping")
+            _log("All screenshot downloads failed — skipping this message", "warn")
             return
 
     website_content = find_relevant_content(content or "error help troubleshoot")
@@ -1692,9 +1766,9 @@ async def on_message(message: discord.Message):
             confidence   = last_conf,
             message_id   = sent.id,
         )
-        print(f"[DB] 💾 Logged answer #{row_id}")
+        _log(f"Answer saved to memory  (record #{row_id})", "skip")
     except discord.HTTPException as exc:
-        print(f"[Discord] Reply failed: {exc}")
+        _log(f"Failed to send reply:  {exc}", "error")
 
 
 # ─────────────────────────────────────────────
