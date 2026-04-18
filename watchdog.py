@@ -16,9 +16,9 @@ from datetime import datetime, timezone
 # ─────────────────────────────────────────────
 #  Version & update config
 # ─────────────────────────────────────────────
-CURRENT_VERSION     = "v1.2.0"
+CURRENT_VERSION     = "v1.2.1"
 GITHUB_API          = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
-RAW_BASE            = "https://raw.githubusercontent.com/InfamousMorningstar/CDN_Captain-bot/main"
+RAW_BASE_TMPL       = "https://raw.githubusercontent.com/InfamousMorningstar/CDN_Captain-bot/{tag}"
 UPDATE_FILES        = ["bot.py", "watchdog.py", "requirements.txt"]
 UPDATE_CHECK_EVERY  = 3600   # re-check for updates every hour (seconds)
 
@@ -105,8 +105,9 @@ def check_and_apply_update() -> bool:
     watchdog_updated      = False
     requirements_updated  = False
 
+    raw_base = RAW_BASE_TMPL.format(tag=latest_tag)
     for fname in UPDATE_FILES:
-        url  = f"{RAW_BASE}/{fname}"
+        url  = f"{raw_base}/{fname}"
         dest = os.path.join(BASE_DIR, fname)
         tmp  = dest + ".new"
         bak  = dest + ".bak"
