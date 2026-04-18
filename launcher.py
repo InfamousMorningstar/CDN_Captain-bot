@@ -76,15 +76,26 @@ def get_existing_install() -> str | None:
 def find_python() -> str | None:
     # Skip sys.executable when running from a PyInstaller bundle — it points back
     # to the installer .exe, not a real Python interpreter.
-    candidates = ["python", "python3", "py"]
+    candidates: list[str] = []
     if not getattr(sys, "frozen", False):
-        candidates.insert(0, sys.executable)
+        candidates.append(sys.executable)
+    candidates += ["python", "python3", "py"]
+
+    # Add hard-coded fallback paths common on Windows (highest versions first)
+    user_base = os.path.join(os.path.expanduser("~"), "AppData", "Local",
+                             "Programs", "Python")
+    for ver in ("313", "312", "311", "310"):
+        candidates.append(os.path.join(user_base, f"Python{ver}", "python.exe"))
+        candidates.append(os.path.join(f"C:\\Python{ver}", "python.exe"))
+        candidates.append(os.path.join("C:\\Program Files", f"Python{ver}", "python.exe"))
+
     for cmd in candidates:
         try:
             r = subprocess.run([cmd, "--version"], capture_output=True, text=True, timeout=5)
-            if r.returncode == 0 and "Python 3." in r.stdout:
-                ver = r.stdout.strip().split()[1].split(".")
-                if int(ver[0]) == 3 and int(ver[1]) >= 10:
+            out = r.stdout.strip() or r.stderr.strip()   # py2 wrote to stderr
+            if r.returncode == 0 and "Python 3." in out:
+                ver_parts = out.split()[1].split(".")
+                if int(ver_parts[0]) == 3 and int(ver_parts[1]) >= 10:
                     return cmd
         except Exception:
             continue
