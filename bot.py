@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.2.6"
+CURRENT_VERSION   = "v1.2.7"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -874,21 +874,38 @@ def is_two_person_convo(recent_msgs: list[discord.Message]) -> bool:
     if len(active_msgs) < 4:
         return False
 
-    unique_authors = {m.author.id for m in active_msgs}
-    if len(unique_authors) != 2:
+    # Find the two most frequently posting authors in the window.
+    # Using != 2 was too strict — a single bystander message would break the guard.
+    from collections import Counter
+    author_counts = Counter(m.author.id for m in active_msgs)
+    top_two = [aid for aid, _ in author_counts.most_common(2)]
+    if len(top_two) < 2:
         return False
 
-    ids = [m.author.id for m in active_msgs]
+    # Only count alternations between the top two authors
+    duo_msgs = [m for m in active_msgs if m.author.id in top_two]
+    ids = [m.author.id for m in duo_msgs]
     alternations = sum(1 for i in range(1, len(ids)) if ids[i] != ids[i-1])
     return alternations >= 3
 
 
 def is_directed_at_someone(message: discord.Message) -> bool:
     """Returns True if the message is a Discord reply to another human user."""
-    if message.reference and message.reference.resolved:
+    # Primary check: resolved reply reference
+    if message.reference:
         ref = message.reference.resolved
         if isinstance(ref, discord.Message) and not ref.author.bot:
             return True
+        # Fallback: reference exists but Discord didn't cache the resolved message.
+        # If the message has exactly one non-bot mention that isn't itself,
+        # treat it as directed at that person.
+        if ref is None and message.reference.message_id:
+            human_mentions = [
+                u for u in message.mentions
+                if not u.bot and (bot.user is None or u.id != bot.user.id)
+            ]
+            if human_mentions:
+                return True
     return False
 
 
