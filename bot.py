@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.2.8"
+CURRENT_VERSION   = "v1.2.9"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -116,7 +116,7 @@ CRAWL_CONCURRENCY           = 4
 CRAWL_CACHE_TTL             = 3600
 AUTO_CRAWL_INTERVAL         = 3600
 TOP_PAGES_FOR_ANSWER        = 12    # more sources fed to Claude
-CHARS_PER_PAGE              = 5000  # more content per page
+CHARS_PER_PAGE              = 10000 # more content per page
 MAX_MESSAGE_AGE_SECONDS     = 90
 TWO_PERSON_CONVO_WINDOW     = 10
 
@@ -490,10 +490,12 @@ def _discover_links(html: str, base_url: str) -> list[str]:
     return links
 
 
-async def _fetch_page_js(browser: Browser, url: str) -> tuple[str, str]:
+async def _fetch_page_js(browser: Browser, url: str) -> tuple[str, str, str]:
     """
     Fetch a single page using Playwright headless Chromium.
-    Fully renders JavaScript before extracting HTML.
+    Clicks through every tab panel so conditionally-rendered content is captured.
+    Returns (url, base_html, all_text) where base_html is used for link discovery
+    and all_text is the combined content from every tab.
     """
     page = None
     try:
@@ -501,10 +503,30 @@ async def _fetch_page_js(browser: Browser, url: str) -> tuple[str, str]:
         await page.set_extra_http_headers({"User-Agent": "CDN-Captain-Bot/1.0"})
         await page.goto(url, wait_until="networkidle", timeout=20000)
         html = await page.content()
-        return url, html
+
+        text_parts: list[str] = [_extract_text(html)]
+
+        # Walk through any tab buttons so hidden/unmounted panels are captured
+        for selector in ('[role="tab"]', '[data-tab]', '.tab-btn', '.tab-button'):
+            tabs = await page.query_selector_all(selector)
+            if len(tabs) > 1:
+                _log(f"{len(tabs)} tabs found  —  reading all panels: …/{url.split('/')[-1] or 'home'}", "crawl")
+                for tab in tabs[1:]:  # tab[0] content already captured above
+                    try:
+                        await tab.click()
+                        await page.wait_for_timeout(700)
+                        tab_text = _extract_text(await page.content())
+                        if tab_text and tab_text not in text_parts:
+                            text_parts.append(tab_text)
+                    except Exception:
+                        pass
+                break  # found a working selector, stop trying others
+
+        all_text = "\n\n--- (tab) ---\n\n".join(text_parts)
+        return url, html, all_text
     except Exception as exc:
         _log(f"Could not load page:  {url}  ({exc})", "warn")
-        return url, ""
+        return url, "", ""
     finally:
         if page:
             try:
@@ -545,12 +567,11 @@ async def crawl_site(session: aiohttp.ClientSession | None) -> None:
                     results = await asyncio.gather(
                         *[_fetch_page_js(browser, u) for u in batch]
                     )
-                    for url, html in results:
+                    for url, html, all_text in results:
                         if not html:
                             continue
-                        text = _extract_text(html)
-                        if text:
-                            new_store[url] = text
+                        if all_text:
+                            new_store[url] = all_text
                         for link in _discover_links(html, url):
                             if link not in visited and link not in queue:
                                 queue.append(link)
