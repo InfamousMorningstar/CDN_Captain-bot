@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.3.0"
+CURRENT_VERSION   = "v1.3.1"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -465,12 +465,14 @@ _crawl_lock                      = asyncio.Lock()
 
 
 def _extract_text(html: str) -> str:
+    """Extract visible text from HTML. No truncation — full content is stored.
+    Truncation to CHARS_PER_PAGE happens later, only when building Claude answer context."""
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "nav", "footer", "header",
                      "aside", "noscript", "iframe", "svg"]):
         tag.decompose()
     text = soup.get_text(separator="\n", strip=True)
-    return re.sub(r"\n{3,}", "\n\n", text)[:CHARS_PER_PAGE]
+    return re.sub(r"\n{3,}", "\n\n", text)
 
 
 def _normalise_url(url: str) -> str:
@@ -601,75 +603,94 @@ async def crawl_site(session: aiohttp.ClientSession | None) -> None:
 # ─────────────────────────────────────────────
 _structured_knowledge: str = ""   # JSON-like facts extracted from the site
 
+_EXTRACT_BATCH_SIZE = 5   # pages per Claude extraction call
+
+_EXTRACTION_PROMPT = """\
+You are extracting structured facts from the CDNDayz DayZ server website.
+Read ALL of the content below and extract EVERY concrete fact.
+
+CRITICAL RULES — follow these exactly:
+- Extract EVERY fact, rule, number, policy, distance, and server-specific detail — miss nothing
+- Do NOT skip content even if it seems minor, repeated, or unfamiliar
+- Do NOT merge multiple facts into one line — each fact gets its own line
+- Do NOT summarise groups of items — list every one individually
+- Do NOT add commentary, blank lines, or explanations
+- Every output line MUST start with a TAG: prefix
+- Use the existing tags listed below when they fit
+- If content does not fit any existing tag, INVENT a short ALL-CAPS tag (e.g. VEHICLE, MAP, ZONE, LOOT, EVENT)
+  — never omit content just because you lack a tag for it
+- Future website additions (new pages, new sections, new features) must be fully captured the same way
+
+Existing tags — use these when they apply:
+  RULE       — any server or community rule
+  WIPE       — wipe schedule, dates, reset policy
+  ERROR      — error codes and their fixes
+  DONATION   — store items, payment, perks, rollover policy
+  SERVER_IP  — server addresses and server names
+  SCIFI      — Sci-fi Banov server (Yrtsk weapons, rep, dungeon, blackmarket, special trader)
+  REP        — reputation thresholds and how rep is earned
+  DUNGEON    — dungeon entry/exit rules, permadeath, admin teleport policy
+  TRADER     — trader info, locations, unlock conditions
+  BASE       — base building rules, distances, territory rules
+  EVENT      — community events and schedules
+  FAQ        — question and answer pairs
+  JOIN       — connection guide, how to join
+
+Format — one fact per line, no blank lines, no commentary:
+RULE: No building within 1000 metres of any trader
+WIPE: Server wipes approximately every 3 months (~90 days)
+ERROR: 0x00040010 = kicked by admin — fix: wait for restart then reconnect
+SCIFI: Yrtsk Tier 1 weapons available at Trader: Armadilo, Boar, Claw, Grizzly, Hedgehog, Puma, Wolverine
+REP: Vehicle Trader unlocks at 10,000 rep
+DUNGEON: Entering without an admin present = permanent ban
+FAQ: Q: Is PvP allowed? A: Not on standard PvE servers; HC servers allow territory PvP and raiding
+
+Only output facts. No explanations. No blank lines. No headers. No markdown.
+
+Website content:
+"""
+
 
 async def extract_structured_knowledge() -> None:
     """
-    After crawling, run a Claude pass over the most content-rich pages to extract
-    structured facts: rules, error codes, distances, wipe schedule, donation tiers, etc.
-    Result stored in _structured_knowledge and injected into every system prompt.
+    After crawling, run Claude over every page in small batches to extract ALL
+    structured facts. Batching prevents hitting Claude's output token limit as
+    the site grows — every new page added to the website will be fully processed.
     """
     global _structured_knowledge
     if not _page_store:
         return
 
-    # Use ALL crawled pages — rules can appear on any page, not just the largest ones
-    all_pages = sorted(_page_store.items(), key=lambda x: len(x[1]), reverse=True)
-    combined  = "\n\n---\n\n".join(f"[{url}]\n{text}" for url, text in all_pages)
+    all_pages  = sorted(_page_store.items(), key=lambda x: len(x[1]), reverse=True)
+    all_facts:  list[str] = []
+    seen_facts: set[str]  = set()
+    n_batches  = math.ceil(len(all_pages) / _EXTRACT_BATCH_SIZE)
 
-    prompt = f"""You are extracting structured facts from the CDNDayz DayZ server website.
-Read ALL of the content below and extract EVERY concrete fact into a clean structured format.
+    _log(f"Extracting facts  —  {len(all_pages)} pages in {n_batches} batch{'es' if n_batches != 1 else ''}...", "crawl")
 
-CRITICAL RULES FOR EXTRACTION:
-- Do NOT skip any rule, even if it seems minor or redundant
-- Do NOT merge multiple rules into a single line — each rule gets its own line
-- Do NOT summarise groups of rules — list each one individually
-- Do NOT add commentary, explanations, or blank lines between facts
-- Every line must start with one of the tags below
-- Capture ALL server-specific details including Sci-fi/Banov content, dungeon rules, trader rep, weapon tiers
+    for batch_idx in range(n_batches):
+        batch   = all_pages[batch_idx * _EXTRACT_BATCH_SIZE:(batch_idx + 1) * _EXTRACT_BATCH_SIZE]
+        combined = "\n\n---\n\n".join(f"[{url}]\n{text}" for url, text in batch)
+        prompt  = _EXTRACTION_PROMPT + combined
 
-Include:
-- Server rules (exact wording, ALL tabs — General, Base Building, Sci-fi Server)
-- Distances / exclusion zones (e.g. "No building within 1000m of traders")
-- Wipe schedule (exact days/times if present)
-- Error codes and their fixes
-- Donation tiers and what they include
-- Server IPs / connection info
-- Any numbered or bulleted rules
-- Grace periods, penalties, ban policies
-- Sci-fi Banov server details: Yrtsk weapon tiers, rep requirements, dungeon rules, hidden blackmarket, special trader
-- Trader rep thresholds and how rep is earned
-- Dungeon rules (permadeath, admin teleport, entry/exit requirements)
+        try:
+            resp = await anthropic_client.messages.create(
+                model="claude-sonnet-4-6",
+                max_tokens=8192,
+                temperature=0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            for line in resp.content[0].text.strip().splitlines():
+                line = line.strip()
+                if line and ":" in line and line not in seen_facts:
+                    seen_facts.add(line)
+                    all_facts.append(line)
+        except Exception as exc:
+            _log(f"Extraction batch {batch_idx + 1}/{n_batches} failed:  {exc}", "warn")
 
-Format — one fact per line, using the tag that best fits:
-RULE: No building within 1000 metres of any trader
-WIPE: Server wipes every Saturday at 6PM EST
-ERROR: 0x00040010 = BattlEye client not responding — fix: reinstall BattlEye
-DONATION: Tier 1 ($5) includes X, Y, Z
-SERVER_IP: 123.456.789.0:2302
-SCIFI: Yrtsk Tier 1 weapons (Trader T1-3): Armadilo, Boar, Claw, Grizzly, Hedgehog, Puma, Wolverine
-SCIFI: Yrtsk Tier 4 weapons (Blackmarket T4-5): A White Whisper, All of Existence, Bars, Corw, Eagle, Fang, Glimpses, Glossy Chip, Ignorance, Sin, Slasher, Sunrise
-REP: Vehicle Trader unlocks at 10,000 rep
-REP: Zombie kill = +10 rep on Sci-fi Banov
-DUNGEON: Die inside the dungeon = permanent death, no respawns, no revives
-TRADER: Special Trader is an elusive merchant found in the wilds
-
-Only output facts. No explanations. No commentary. No blank lines.
-
-Website content:
-{combined}"""
-
-    try:
-        resp = await anthropic_client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=8192,
-            temperature=0,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        _structured_knowledge = resp.content[0].text.strip()
-        await db_set_state("structured_knowledge", _structured_knowledge)
-        _log(f"Facts ready  —  {len(_structured_knowledge.splitlines())} rules, schedules & server details extracted", "ok")
-    except Exception as exc:
-        _log(f"Could not extract facts from website:  {exc}", "warn")
+    _structured_knowledge = "\n".join(all_facts)
+    await db_set_state("structured_knowledge", _structured_knowledge)
+    _log(f"Facts ready  —  {len(all_facts)} facts extracted across {n_batches} batch{'es' if n_batches != 1 else ''}", "ok")
 
 
 # ─────────────────────────────────────────────
@@ -877,7 +898,7 @@ def find_relevant_content(question: str) -> str:
     if not keywords:
         # Fallback: return largest pages
         top = sorted(_page_store.items(), key=lambda x: len(x[1]), reverse=True)[:TOP_PAGES_FOR_ANSWER]
-        return "\n\n══════════\n\n".join(f"[Source: {u}]\n{t}" for u, t in top)
+        return "\n\n══════════\n\n".join(f"[Source: {u}]\n{t[:CHARS_PER_PAGE]}" for u, t in top)
 
     scored = [
         (_tfidf_score(keywords, text, url), url, text)
@@ -888,10 +909,10 @@ def find_relevant_content(question: str) -> str:
     # If the top result has zero score, fall back to largest pages
     if not scored or scored[0][0] == 0:
         top = sorted(_page_store.items(), key=lambda x: len(x[1]), reverse=True)[:TOP_PAGES_FOR_ANSWER]
-        return "\n\n══════════\n\n".join(f"[Source: {u}]\n{t}" for u, t in top)
+        return "\n\n══════════\n\n".join(f"[Source: {u}]\n{t[:CHARS_PER_PAGE]}" for u, t in top)
 
     top = scored[:TOP_PAGES_FOR_ANSWER]
-    return "\n\n══════════\n\n".join(f"[Source: {u}]\n{t}" for _, u, t in top)
+    return "\n\n══════════\n\n".join(f"[Source: {u}]\n{t[:CHARS_PER_PAGE]}" for _, u, t in top)
 
 
 # ─────────────────────────────────────────────
