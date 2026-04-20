@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.3.3"
+CURRENT_VERSION   = "v1.3.4"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -1472,6 +1472,31 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
         # Re-check after stripping confidence header
         if not answer or answer.upper().startswith(NO_ANSWER):
             return None
+
+        # Hard post-processing filter: catch deflection/non-answers that slipped past
+        # the model's NO_ANSWER instruction. These phrases mean the bot has nothing
+        # sourced to say and is making up a friendly redirect instead of staying silent.
+        _DEFLECTION_PATTERNS = [
+            r"don'?t have (specific |that )?(info|information|details?)",
+            r"(that'?s |this is )not something i have",
+            r"(not in|not from) (my |our |the )?(server |site |)docs",
+            r"your best bet (is|would be)",
+            r"(would be|is) a better person to answer",
+            r"he'?d be a better",
+            r"she'?d be a better",
+            r"i('?d| would) (suggest|recommend) (asking|checking with)",
+            r"(ask|check with) (toby|morningstar|an admin|the admins|staff|a mod)",
+            r"can'?t (find|locate|confirm) (that|this|any) (info|information|detail)",
+            r"(check|look in) (the )?(discord|#|server)",
+            r"open (a )?ticket",
+            r"i('?m| am) not sure (about|of) (that|this)",
+            r"(can vary|depends on) (the server|setup|configuration)",
+        ]
+        answer_lc = answer.lower()
+        for pat in _DEFLECTION_PATTERNS:
+            if re.search(pat, answer_lc):
+                _log(f"Suppressed deflection response  —  \"{label}\"", "skip")
+                return None
 
         # Store confidence so it can be logged to DB
         evaluate_and_answer._last_confidence = confidence
