@@ -98,10 +98,10 @@ def _print_ready(guild_name: str) -> None:
 # ─────────────────────────────────────────────
 DISCORD_TOKEN     = os.getenv("DISCORD_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
-CDN_WEBSITE       = "https://cdndayz.com"
+CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.2.7"
+CURRENT_VERSION   = "v1.2.8"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -465,9 +465,18 @@ def _extract_text(html: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", text)[:CHARS_PER_PAGE]
 
 
+def _normalise_url(url: str) -> str:
+    """Ensure all site URLs use the canonical www. form for consistent deduplication."""
+    parsed = urlparse(url)
+    if parsed.netloc == "cdndayz.com":
+        url = parsed._replace(netloc="www.cdndayz.com").geturl()
+    return url.rstrip("/")
+
+
 def _discover_links(html: str, base_url: str) -> list[str]:
     soup  = BeautifulSoup(html, "html.parser")
     base  = urlparse(CDN_WEBSITE)
+    base_netloc = base.netloc.removeprefix("www.")
     links = []
     for tag in soup.find_all("a", href=True):
         href = tag["href"].strip()
@@ -476,8 +485,8 @@ def _discover_links(html: str, base_url: str) -> list[str]:
         full = urljoin(base_url, href)
         full, _ = urldefrag(full)
         parsed  = urlparse(full)
-        if parsed.netloc == base.netloc and parsed.scheme in ("http", "https"):
-            links.append(full.rstrip("/"))
+        if parsed.netloc.removeprefix("www.") == base_netloc and parsed.scheme in ("http", "https"):
+            links.append(_normalise_url(full))
     return links
 
 
@@ -517,7 +526,7 @@ async def crawl_site(session: aiohttp.ClientSession | None) -> None:
         _log("Reading cdndayz.com  —  loading all pages (renders JavaScript, takes ~15 seconds)...", "crawl")
         start      = time.time()
         visited:   set[str]       = set()
-        queue:     list[str]      = [CDN_WEBSITE.rstrip("/")]
+        queue:     list[str]      = [_normalise_url(CDN_WEBSITE)]
         new_store: dict[str, str] = {}
 
         async with async_playwright() as p:
