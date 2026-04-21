@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.3.9"
+CURRENT_VERSION   = "v1.4.0"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -176,6 +176,87 @@ REF_CHANNEL_CACHE_TTL       = 1800
 # Change detection — post website update alerts to this channel (set to None to disable)
 # Replace with your staff/log channel ID if you want change announcements
 CHANGE_ALERT_CHANNEL_ID: int | None = None
+
+# ─────────────────────────────────────────────
+#  Black Market Location Guard  (edit here)
+# ─────────────────────────────────────────────
+# Master toggle — set False to disable the entire feature without removing code
+BM_GUARD_ENABLED: bool = True
+
+# DM or send a warning in-channel after deleting a message (disappears after 15s)
+BM_WARN_USER: bool = True
+
+# Channel ID to log every deletion to a mod/admin channel (set None to disable)
+BM_LOG_CHANNEL_ID: int | None = None
+
+# Use Claude as a secondary check when a message is borderline but not a clear hit.
+# Costs one fast API call per borderline message. Recommended: False until you know
+# the keyword list is tuned — turn on to catch creative workarounds.
+BM_CLAUDE_SECONDARY: bool = False
+
+# Role IDs whose members are completely exempt from this check.
+# Add your Moderator, Admin, Staff role IDs here.
+# Members with Discord administrator permission are always exempt regardless.
+BM_EXEMPT_ROLE_IDS: set[int] = set()
+
+# ── Channel scoping — Sci-fi Banov only ──────────────────────────────────────
+# The black market is hidden on Sci-fi Banov but is marked on other maps,
+# so the guard should only run in Sci-fi Banov channels.
+#
+# Option A — explicit channel IDs (most precise, add every scifi channel ID):
+#   BM_SCIFI_CHANNEL_IDS = {1234567890, 9876543210}
+# Option B — channel name substrings (catches any channel containing these words):
+#   BM_SCIFI_CHANNEL_NAMES = {"scifi", "banov", "sci-fi"}
+# Both can be used together — a channel passes if it matches EITHER.
+# If BOTH sets are empty the guard runs in every channel (recommended — a location
+# reveal is just as harmful whether posted in #scifi-banov or #general).
+BM_SCIFI_CHANNEL_IDS:   set[int] = set()
+BM_SCIFI_CHANNEL_NAMES: set[str] = set()
+
+# ── Exact keyword/alias list (case-insensitive substring match) ───────────────
+# Add known location names, abbreviations, and place names here.
+BM_KEYWORDS: set[str] = {
+    "black market",
+    "blackmarket",
+    "black-market",
+    "bm location",
+    "bm coords",
+    "bm coordinates",
+    "bm is at",
+    "bm at",
+    "bm spot",
+    "bm grid",
+    "bm position",
+}
+
+# ── Phrase patterns (regex, case-insensitive) ─────────────────────────────────
+# Catches full-sentence reveals and hints even if exact keywords aren't used.
+_BM_PHRASE_PATTERNS: list[str] = [
+    r"\bblack\s*market\s+(is\s+)?(at|near|around|located|found|behind|inside|next\s+to)\b",
+    r"\b(go\s+to|head\s+to|find|check|visit|look\s+for)\s+(the\s+)?black\s*market\b",
+    r"\bblack\s*market\s+location\b",
+    r"\bblack\s*market\s+coords?\b",
+    r"\bblack\s*market\s+(is\s+)?(hidden|secret|unlocked|accessible)\b",
+    r"\bcoords?\s+(for|of|to)\s+(the\s+)?black\s*market\b",
+    r"\b(bm)\s+(is\s+)?(at|near|around|located|found|behind|inside|next\s+to)\b",
+    r"\bwhere\s+(is|are)\s+(the\s+)?black\s*market\b",
+    r"\bblack\s*market\s+(is\s+)?somewhere\b",
+]
+_BM_PHRASE_RE: re.Pattern = re.compile(
+    "|".join(_BM_PHRASE_PATTERNS), re.IGNORECASE
+)
+
+# ── Coordinate pattern ────────────────────────────────────────────────────────
+# Matches DayZ-style map coordinates like 4500/6200  or  4500, 6200  or  045 062.
+# A coordinate alone is harmless — it only triggers when combined with BM context.
+_BM_COORD_RE: re.Pattern = re.compile(
+    r"\b\d{3,5}\s*[/,]\s*\d{3,5}\b", re.IGNORECASE
+)
+# Words that make a coordinate post a BM location reveal
+_BM_COORD_CONTEXT: set[str] = {
+    "black market", "blackmarket", "bm", "market location",
+    "hidden trader", "special trader", "secret",
+}
 
 PROTECTED_ADMINS = {"5pntjoe", "strikezx"}
 
@@ -1203,6 +1284,168 @@ def mentions_admin(message: discord.Message) -> bool:
 
 
 # ─────────────────────────────────────────────
+#  Black Market Location Guard — helpers
+# ─────────────────────────────────────────────
+def _bm_in_scoped_channel(message: discord.Message) -> bool:
+    """
+    Returns True if the message was sent in a Sci-fi Banov channel.
+    When both BM_SCIFI_CHANNEL_IDS and BM_SCIFI_CHANNEL_NAMES are empty,
+    returns True (guard runs everywhere — scoping is disabled).
+    """
+    if not BM_SCIFI_CHANNEL_IDS and not BM_SCIFI_CHANNEL_NAMES:
+        return True  # no scoping configured — run in all channels
+    # Explicit channel ID match
+    if message.channel.id in BM_SCIFI_CHANNEL_IDS:
+        return True
+    # Channel name substring match (case-insensitive)
+    ch_name = getattr(message.channel, "name", "").lower()
+    if any(n in ch_name for n in BM_SCIFI_CHANNEL_NAMES):
+        return True
+    # Also check parent category name for thread channels
+    parent_cat = getattr(getattr(message.channel, "category", None), "name", "") or ""
+    if any(n in parent_cat.lower() for n in BM_SCIFI_CHANNEL_NAMES):
+        return True
+    return False
+
+
+def _bm_is_exempt(message: discord.Message) -> bool:
+    """
+    Returns True if the author should bypass the BM guard.
+    Always exempt: Discord administrators.
+    Optionally exempt: members whose roles are in BM_EXEMPT_ROLE_IDS.
+    """
+    if not isinstance(message.author, discord.Member):
+        return False
+    if message.author.guild_permissions.administrator:
+        return True
+    if BM_EXEMPT_ROLE_IDS:
+        author_role_ids = {role.id for role in message.author.roles}
+        if author_role_ids & BM_EXEMPT_ROLE_IDS:
+            return True
+    return False
+
+
+def _bm_detect(content: str) -> tuple[bool, str]:
+    """
+    Local-only detection — no API calls.
+    Returns (triggered, reason_string).
+
+    Three tiers checked in order:
+      1. Exact keyword/alias match
+      2. Phrase pattern (regex)
+      3. Coordinate + BM context word
+    """
+    cl = content.lower()
+
+    # Tier 1: exact keyword
+    for kw in BM_KEYWORDS:
+        if kw in cl:
+            return True, f"keyword match: {kw!r}"
+
+    # Tier 2: phrase pattern
+    m = _BM_PHRASE_RE.search(content)
+    if m:
+        return True, f"phrase pattern: {m.group()!r}"
+
+    # Tier 3: coordinates + BM context word in same message
+    if _BM_COORD_RE.search(content):
+        for ctx_word in _BM_COORD_CONTEXT:
+            if ctx_word in cl:
+                return True, f"coordinates + context word: {ctx_word!r}"
+
+    return False, ""
+
+
+async def _bm_claude_check(content: str) -> bool:
+    """
+    Optional secondary check via Claude for borderline messages.
+    Only called when BM_CLAUDE_SECONDARY is True and the message
+    contains a BM-related word but didn't trigger the primary patterns.
+    Fails safe — returns False on any API error (never deletes on uncertainty).
+    """
+    try:
+        resp = await anthropic_client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=5,
+            temperature=0,
+            messages=[{
+                "role": "user",
+                "content": (
+                    "You are a Discord moderation filter for a DayZ game server. "
+                    "The black market location is a server secret that must not be shared. "
+                    "Does the following message reveal, hint at, or share the black market's "
+                    "in-game location in any way? Reply with only YES or NO.\n\n"
+                    f"Message: {content}"
+                ),
+            }],
+        )
+        return resp.content[0].text.strip().upper().startswith("YES")
+    except Exception as exc:
+        _log(f"BM guard Claude check failed (failing safe — not deleting):  {exc}", "warn")
+        return False
+
+
+async def _bm_handle_violation(message: discord.Message, reason: str) -> None:
+    """
+    Act on a detected BM location reveal:
+      1. Delete the message
+      2. Log to mod channel (if BM_LOG_CHANNEL_ID is set)
+      3. Warn the user in-channel (if BM_WARN_USER is True)
+    """
+    author      = message.author.display_name
+    chan        = getattr(message.channel, "name", "unknown")
+    preview     = message.content[:80]
+    _log(f"BM guard — deleted  ({reason})  #{chan}  ·  {author}:  \"{preview}\"", "warn")
+
+    # 1. Delete the offending message
+    try:
+        await message.delete()
+    except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
+        _log(f"BM guard: could not delete message:  {exc}", "error")
+        return  # Don't warn if deletion failed — message is still visible
+
+    # 2. Log to mod channel
+    if BM_LOG_CHANNEL_ID and message.guild:
+        log_ch = message.guild.get_channel(BM_LOG_CHANNEL_ID)
+        if log_ch and isinstance(log_ch, discord.TextChannel):
+            embed = discord.Embed(
+                title="🚫 Black Market Location Reveal — Deleted",
+                color=discord.Color.red(),
+            )
+            embed.add_field(
+                name="Author",
+                value=f"{message.author.mention} ({message.author.display_name})",
+                inline=True,
+            )
+            embed.add_field(name="Channel", value=f"<#{message.channel.id}>", inline=True)
+            embed.add_field(name="Trigger", value=reason, inline=True)
+            embed.add_field(
+                name="Message",
+                value=f"```{message.content[:1000]}```",
+                inline=False,
+            )
+            embed.set_footer(
+                text=f"CDN_Captain BM Guard  ·  "
+                     f"{datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')}"
+            )
+            try:
+                await log_ch.send(embed=embed)
+            except discord.HTTPException:
+                pass
+
+    # 3. Warn the user
+    if BM_WARN_USER:
+        try:
+            await message.channel.send(
+                f"⚠️ {message.author.mention} Your message was removed — "
+                f"please don't share or hint at the **black market location** in chat.",
+                delete_after=15,
+            )
+        except discord.HTTPException:
+            pass
+
+
+# ─────────────────────────────────────────────
 #  Single smart Claude call — filter + answer combined
 # ─────────────────────────────────────────────
 async def evaluate_and_answer(
@@ -1859,6 +2102,25 @@ async def on_message(message: discord.Message):
 
     img_note = f"  +{len(img_attachments)} image{'s' if len(img_attachments) != 1 else ''}" if img_attachments else ""
     _log(f"#{channel_name}  ·  {message.author.display_name}:  \"{content[:55]}\"{img_note}", "msg")
+
+    # ── Black market location guard ───────────────────────────────────────────
+    # Runs for every message regardless of pause state — moderation is always on.
+    # Scoped to Sci-fi Banov channels only (other maps show the BM on the map).
+    if BM_GUARD_ENABLED and content and not _bm_is_exempt(message) and _bm_in_scoped_channel(message):
+        triggered, reason = _bm_detect(content)
+        if not triggered and BM_CLAUDE_SECONDARY:
+            # Secondary check only when message contains a BM-related word but
+            # didn't match any hard pattern — avoids unnecessary API calls.
+            cl = content.lower()
+            borderline = any(w in cl for w in {"bm", "black market", "blackmarket", "market"})
+            if borderline:
+                triggered = await _bm_claude_check(content)
+                if triggered:
+                    reason = "Claude secondary check"
+        if triggered:
+            await _bm_handle_violation(message, reason)
+            return
+    # ─────────────────────────────────────────────────────────────────────────
 
     # ── Sidekick mode — owner only ────────────────────────────────────────────
     if is_sidekick_trigger(message):
