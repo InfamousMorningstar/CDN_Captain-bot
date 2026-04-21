@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 # ─────────────────────────────────────────────
 #  Version & update config
 # ─────────────────────────────────────────────
-CURRENT_VERSION     = "v1.3.5"
+CURRENT_VERSION     = "v1.3.6"
 GITHUB_API          = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 RAW_BASE_TMPL       = "https://raw.githubusercontent.com/InfamousMorningstar/CDN_Captain-bot/{tag}"
 UPDATE_FILES        = ["bot.py", "watchdog.py", "requirements.txt"]
@@ -209,10 +209,10 @@ def main() -> None:
             last_update_check = now
             update_result = check_and_apply_update()
             if update_result == "watchdog":
-                # watchdog.py itself was replaced — spawn the new version and exit
+                # watchdog.py itself was replaced — replace this process in-place
+                # so the console window stays open (no new window spawned)
                 log("🔄 Watchdog updated — restarting with new version...")
-                subprocess.Popen([python, os.path.join(BASE_DIR, "watchdog.py")])
-                sys.exit(0)
+                os.execv(python, [python, os.path.join(BASE_DIR, "watchdog.py")])
 
         # ── Crash-loop guard ─────────────────────────────────────────────────
         restarts = [t for t in restarts if now - t < RESTART_WINDOW]
@@ -249,8 +249,7 @@ def main() -> None:
                         except subprocess.TimeoutExpired:
                             proc.kill()
                         log("🔄 Restarting watchdog with new version...")
-                        subprocess.Popen([python, os.path.join(BASE_DIR, "watchdog.py")])
-                        sys.exit(0)
+                        os.execv(python, [python, os.path.join(BASE_DIR, "watchdog.py")])
                     elif update_result == "bot":
                         log("🔄 Bot updated — restarting bot process...")
                         proc.terminate()

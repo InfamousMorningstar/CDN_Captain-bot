@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.3.5"
+CURRENT_VERSION   = "v1.3.6"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
