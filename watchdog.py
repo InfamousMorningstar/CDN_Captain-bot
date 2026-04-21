@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 # ─────────────────────────────────────────────
 #  Version & update config
 # ─────────────────────────────────────────────
-CURRENT_VERSION     = "v1.3.4"
+CURRENT_VERSION     = "v1.3.5"
 GITHUB_API          = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 RAW_BASE_TMPL       = "https://raw.githubusercontent.com/InfamousMorningstar/CDN_Captain-bot/{tag}"
 UPDATE_FILES        = ["bot.py", "watchdog.py", "requirements.txt"]
@@ -83,21 +83,23 @@ def _fetch_latest_release() -> dict | None:
         return None
 
 
-def check_and_apply_update() -> bool:
+def check_and_apply_update() -> str:
     """
     Compare the latest GitHub release tag against CURRENT_VERSION.
     If newer: download all UPDATE_FILES from GitHub raw, replace local copies,
-    run pip install if requirements.txt changed, and return True if watchdog.py
-    itself was updated (so the caller can restart the watchdog process).
-    Returns False when already up to date or on any failure.
+    run pip install if requirements.txt changed.
+    Returns:
+      'watchdog' — watchdog.py itself was updated (caller must restart watchdog)
+      'bot'      — bot.py or requirements.txt updated (caller should restart bot)
+      'none'     — already up to date or any failure
     """
     data = _fetch_latest_release()
     if not data:
-        return False
+        return "none"
 
     latest_tag = data.get("tag_name", "").strip()
     if not latest_tag or latest_tag == CURRENT_VERSION:
-        return False   # already on the latest version
+        return "none"   # already on the latest version
 
     log(f"⬆️  New version available: {latest_tag}  (running {CURRENT_VERSION})")
     log("   Downloading updates in the background — bot will restart once ready...")
@@ -131,7 +133,7 @@ def check_and_apply_update() -> bool:
                             os.remove(tmp)
                         except OSError:
                             pass
-                    return False
+                    return "none"
 
             # Write to a temp file first — never leave a half-written script
             with open(tmp, "wb") as f:
@@ -174,7 +176,9 @@ def check_and_apply_update() -> bool:
             log(f"   ⚠️  pip install failed: {exc}")
 
     log(f"✅ Updated to {latest_tag}")
-    return watchdog_updated
+    if watchdog_updated:
+        return "watchdog"
+    return "bot"
 
 
 # ─────────────────────────────────────────────
@@ -200,11 +204,11 @@ def main() -> None:
     while True:
         now = time.time()
 
-        # ── Update check (on startup and every UPDATE_CHECK_EVERY seconds) ──
+        # ── Update check before launching bot ────────────────────────────────
         if now - last_update_check >= UPDATE_CHECK_EVERY:
             last_update_check = now
-            watchdog_changed = check_and_apply_update()
-            if watchdog_changed:
+            update_result = check_and_apply_update()
+            if update_result == "watchdog":
                 # watchdog.py itself was replaced — spawn the new version and exit
                 log("🔄 Watchdog updated — restarting with new version...")
                 subprocess.Popen([python, os.path.join(BASE_DIR, "watchdog.py")])
@@ -217,15 +221,54 @@ def main() -> None:
             log("   Fix the error above and restart the watchdog manually.")
             sys.exit(1)
 
-        # ── Start the bot ────────────────────────────────────────────────────
+        # ── Start the bot (non-blocking) ─────────────────────────────────────
         attempt = len(restarts) + 1
         log(f"🚀 Starting bot.py  (run #{attempt} in window)...")
         start_time = time.time()
 
         try:
-            proc        = subprocess.run([python, script], check=False)
-            exit_code   = proc.returncode
+            proc           = subprocess.Popen([python, script])
+            exit_code      = None
+            update_restart = False
+
+            # Poll until the bot exits — also check for updates while it runs
+            while True:
+                exit_code = proc.poll()
+                if exit_code is not None:
+                    break
+
+                now = time.time()
+                if now - last_update_check >= UPDATE_CHECK_EVERY:
+                    last_update_check = now
+                    update_result = check_and_apply_update()
+                    if update_result == "watchdog":
+                        log("🔄 Watchdog updated — stopping bot for full restart...")
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=15)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        log("🔄 Restarting watchdog with new version...")
+                        subprocess.Popen([python, os.path.join(BASE_DIR, "watchdog.py")])
+                        sys.exit(0)
+                    elif update_result == "bot":
+                        log("🔄 Bot updated — restarting bot process...")
+                        proc.terminate()
+                        try:
+                            proc.wait(timeout=15)
+                        except subprocess.TimeoutExpired:
+                            proc.kill()
+                        update_restart = True
+                        break
+
+                time.sleep(10)  # poll every 10 seconds
+
             run_seconds = int(time.time() - start_time)
+
+            if update_restart:
+                # Stopped intentionally for update — restart without counting as a crash
+                log(f"✔ Bot stopped for update after {run_seconds}s — relaunching...")
+                continue
 
             if exit_code == 0:
                 log(f"✅ Bot exited cleanly after {run_seconds}s — watchdog stopping.")
@@ -238,6 +281,8 @@ def main() -> None:
 
         except KeyboardInterrupt:
             log("🛑 Stopped by user (Ctrl+C)")
+            if proc.poll() is None:
+                proc.terminate()
             break
         except Exception as exc:
             log(f"❌ Watchdog error: {exc}")
