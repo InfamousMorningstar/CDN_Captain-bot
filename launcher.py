@@ -74,6 +74,7 @@ def get_existing_install() -> str | None:
 
 # ── Python detection ───────────────────────────────────────────────────────────
 def find_python() -> str | None:
+    import shutil
     # Skip sys.executable when running from a PyInstaller bundle — it points back
     # to the installer .exe, not a real Python interpreter.
     candidates: list[str] = []
@@ -96,7 +97,11 @@ def find_python() -> str | None:
             if r.returncode == 0 and "Python 3." in out:
                 ver_parts = out.split()[1].split(".")
                 if int(ver_parts[0]) == 3 and int(ver_parts[1]) >= 10:
-                    return cmd
+                    # Always resolve to a full absolute path — bare names like "py"
+                    # or "python" can fail in a freshly spawned cmd.exe window due
+                    # to Windows App Execution Aliases not being available there.
+                    full_path = shutil.which(cmd) if not os.path.isabs(cmd) else cmd
+                    return full_path if full_path else cmd
         except Exception:
             continue
     return None
