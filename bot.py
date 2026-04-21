@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.4.0"
+CURRENT_VERSION   = "v1.4.1"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -216,9 +216,9 @@ BM_SCIFI_CHANNEL_NAMES: set[str] = set()
 # ── Exact keyword/alias list (case-insensitive substring match) ───────────────
 # Add known location names, abbreviations, and place names here.
 BM_KEYWORDS: set[str] = {
-    "black market",
-    "blackmarket",
-    "black-market",
+    # Bare "blackmarket" / "black market" removed — too broad.
+    # These fire on innocent messages like "what does the blackmarket sell?".
+    # Location-specific combos are kept as exact matches.
     "bm location",
     "bm coords",
     "bm coordinates",
@@ -231,16 +231,28 @@ BM_KEYWORDS: set[str] = {
 
 # ── Phrase patterns (regex, case-insensitive) ─────────────────────────────────
 # Catches full-sentence reveals and hints even if exact keywords aren't used.
+# "blackmarket is close to area 01" → caught by the first pattern (close\s+to).
 _BM_PHRASE_PATTERNS: list[str] = [
-    r"\bblack\s*market\s+(is\s+)?(at|near|around|located|found|behind|inside|next\s+to)\b",
+    # blackmarket + proximity/direction word  (is/was optional)
+    r"\bblack\s*market\s+(is\s+|was\s+)?(at|near|around|located|found|behind|inside|"
+    r"next\s+to|close\s+to|by|past|opposite|between|before|after|in\s+front\s+of|"
+    r"south|north|east|west|southwest|northwest|southeast|northeast)\b",
+    # go to / head to / find / visit the blackmarket
     r"\b(go\s+to|head\s+to|find|check|visit|look\s+for)\s+(the\s+)?black\s*market\b",
-    r"\bblack\s*market\s+location\b",
-    r"\bblack\s*market\s+coords?\b",
+    # blackmarket + location/coords keywords
+    r"\bblack\s*market\s+(location|coords?|coordinates|position|grid|spot|whereabouts)\b",
+    # blackmarket + area/zone/sector reference  (e.g. "blackmarket is close to area 01")
+    r"\bblack\s*market\b.{0,40}\b(area\s*\d+|zone\s*\d*|sector\s*\d*|grid\s*\d+)\b",
+    # blackmarket + hidden/secret (still worth catching — confirms it can be found)
     r"\bblack\s*market\s+(is\s+)?(hidden|secret|unlocked|accessible)\b",
+    # coords for the blackmarket
     r"\bcoords?\s+(for|of|to)\s+(the\s+)?black\s*market\b",
-    r"\b(bm)\s+(is\s+)?(at|near|around|located|found|behind|inside|next\s+to)\b",
+    # bm (abbreviation) + proximity/direction word
+    r"\b(bm)\s+(is\s+|was\s+)?(at|near|around|located|found|behind|inside|"
+    r"next\s+to|close\s+to|by|past|opposite|between|before|after|in\s+front\s+of|"
+    r"south|north|east|west)\b",
+    # where is the blackmarket
     r"\bwhere\s+(is|are)\s+(the\s+)?black\s*market\b",
-    r"\bblack\s*market\s+(is\s+)?somewhere\b",
 ]
 _BM_PHRASE_RE: re.Pattern = re.compile(
     "|".join(_BM_PHRASE_PATTERNS), re.IGNORECASE
@@ -1395,22 +1407,29 @@ async def _bm_handle_violation(message: discord.Message, reason: str) -> None:
     author      = message.author.display_name
     chan        = getattr(message.channel, "name", "unknown")
     preview     = message.content[:80]
-    _log(f"BM guard — deleted  ({reason})  #{chan}  ·  {author}:  \"{preview}\"", "warn")
 
     # 1. Delete the offending message
+    deleted = False
     try:
         await message.delete()
-    except (discord.Forbidden, discord.NotFound, discord.HTTPException) as exc:
-        _log(f"BM guard: could not delete message:  {exc}", "error")
-        return  # Don't warn if deletion failed — message is still visible
+        deleted = True
+        _log(f"BM guard — deleted  ({reason})  #{chan}  ·  {author}:  \"{preview}\"", "warn")
+    except discord.Forbidden:
+        _log(f"BM guard — no permission to delete  ({reason})  #{chan}  ·  {author}:  \"{preview}\"", "error")
+    except discord.NotFound:
+        deleted = True  # already gone — treat as success
+        _log(f"BM guard — message already deleted  ({reason})  #{chan}  ·  {author}", "warn")
+    except discord.HTTPException as exc:
+        _log(f"BM guard — delete failed  ({exc})  #{chan}  ·  {author}:  \"{preview}\"", "error")
 
-    # 2. Log to mod channel
+    # 2. Log to mod channel (always fires — even if deletion failed, mods need to know)
     if BM_LOG_CHANNEL_ID and message.guild:
         log_ch = message.guild.get_channel(BM_LOG_CHANNEL_ID)
         if log_ch and isinstance(log_ch, discord.TextChannel):
+            status = "Deleted" if deleted else "⚠️ Could NOT delete — missing permissions"
             embed = discord.Embed(
-                title="🚫 Black Market Location Reveal — Deleted",
-                color=discord.Color.red(),
+                title="🚫 Black Market Location Reveal" + ("" if deleted else " — ACTION REQUIRED"),
+                color=discord.Color.red() if deleted else discord.Color.dark_red(),
             )
             embed.add_field(
                 name="Author",
@@ -1419,6 +1438,7 @@ async def _bm_handle_violation(message: discord.Message, reason: str) -> None:
             )
             embed.add_field(name="Channel", value=f"<#{message.channel.id}>", inline=True)
             embed.add_field(name="Trigger", value=reason, inline=True)
+            embed.add_field(name="Status", value=status, inline=True)
             embed.add_field(
                 name="Message",
                 value=f"```{message.content[:1000]}```",
@@ -1433,8 +1453,8 @@ async def _bm_handle_violation(message: discord.Message, reason: str) -> None:
             except discord.HTTPException:
                 pass
 
-    # 3. Warn the user
-    if BM_WARN_USER:
+    # 3. Warn the user (only if deletion succeeded — warning on a still-visible message is confusing)
+    if BM_WARN_USER and deleted:
         try:
             await message.channel.send(
                 f"⚠️ {message.author.mention} Your message was removed — "
