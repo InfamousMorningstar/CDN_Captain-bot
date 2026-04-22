@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.5.0"
+CURRENT_VERSION   = "v1.5.1"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -2132,7 +2132,7 @@ async def on_message(message: discord.Message):
     # ── Black market location guard ───────────────────────────────────────────
     # Runs for every message regardless of pause state — moderation is always on.
     # Scoped to Sci-fi Banov channels only (other maps show the BM on the map).
-    if BM_GUARD_ENABLED and content and not _bm_is_exempt(message) and _bm_in_scoped_channel(message):
+    if BM_GUARD_ENABLED and content and _bm_in_scoped_channel(message):
         triggered, reason = _bm_detect(content)
         if not triggered and BM_CLAUDE_SECONDARY:
             # Secondary check only when message contains a BM-related word but
@@ -2144,8 +2144,14 @@ async def on_message(message: discord.Message):
                 if triggered:
                     reason = "Claude secondary check"
         if triggered:
-            await _bm_handle_violation(message, reason)
-            return
+            if _bm_is_exempt(message):
+                chan   = getattr(message.channel, "name", "unknown")
+                author = message.author.display_name
+                preview = content[:80]
+                _log(f"BM guard — detected (admin exempt, not deleted)  ({reason})  #{chan}  ·  {author}:  \"{preview}\"", "warn")
+            else:
+                await _bm_handle_violation(message, reason)
+                return
     # ─────────────────────────────────────────────────────────────────────────
 
     # ── Sidekick mode — owner only ────────────────────────────────────────────
