@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.5.1"
+CURRENT_VERSION   = "v1.5.2"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -1463,8 +1463,9 @@ async def _bm_handle_violation(message: discord.Message, reason: str) -> None:
     if BM_WARN_USER and deleted:
         try:
             await message.channel.send(
-                f"⚠️ {message.author.mention} Your message was removed — "
-                f"please don't share or hint at the **black market location** in chat.",
+                f"Hey {message.author.mention}, your message was removed 🚫\n"
+                f"Naming or pinpointing the **exact black market location** isn't allowed on this server — "
+                f"keep it a mystery for everyone! 🤫",
                 delete_after=15,
             )
         except discord.HTTPException:
