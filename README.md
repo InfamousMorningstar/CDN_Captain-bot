@@ -59,7 +59,7 @@ No noise. No guessing. No "open a ticket." Either an instant, accurate answer, o
 | Feature | Detail |
 |---|---|
 | **Admin Reaction Feedback** | Admins react ❌ to mark an answer wrong (bot deletes it automatically) or ✅ to confirm correct. Only protected admins trigger this |
-| **Admin Tag Protection** | If someone tags a protected admin, the bot intercepts with a polite redirect to the website and ticket system |
+| **Admin Tag Protection** | If a non-admin tags a protected admin, the bot intercepts with a polite redirect to the website and ticket system. Admins can tag each other normally |
 | **Spam Protection** | 30-second per-user cooldown — won't flood any channel |
 | **Answer Deduplication** | Won't repeat the same answer in the same channel within 5 minutes |
 | **Rate Limit Retry** | All replies use exponential backoff — no answer is ever silently dropped |

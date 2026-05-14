@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.5.2"
+CURRENT_VERSION   = "v1.5.3"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -1297,6 +1297,17 @@ def mentions_admin(message: discord.Message) -> bool:
     return False
 
 
+def is_admin_author(message: discord.Message) -> bool:
+    """True when the message author is an admin (protected or Discord admin)."""
+    author = message.author
+    if isinstance(author, discord.Member) and author.guild_permissions.administrator:
+        return True
+    return (
+        author.name.lower() in PROTECTED_ADMINS
+        or author.display_name.lower() in PROTECTED_ADMINS
+    )
+
+
 # ─────────────────────────────────────────────
 #  Black Market Location Guard — helpers
 # ─────────────────────────────────────────────
@@ -2114,7 +2125,7 @@ async def on_message(message: discord.Message):
         return
 
     # ── Admin tag protection ───────────────────────────────────────────
-    if mentions_admin(message):
+    if mentions_admin(message) and not is_admin_author(message):
         try:
             await message.reply(build_admin_tag_response(message), mention_author=True)
         except discord.HTTPException:

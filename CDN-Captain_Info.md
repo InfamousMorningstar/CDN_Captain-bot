@@ -25,7 +25,7 @@
 | 🎯 **Confidence Scoring** | Claude rates its own answer 1–10 before sending. If confidence is below 6, the bot stays silent instead of sending an uncertain answer |
 | 🔇 **Smart Silence** | Returns nothing at all when it doesn't have a confident, sourced answer — no guessing, no vague suggestions, no "I don't know", no "open a ticket" |
 | 👥 **Two-Person Convo Detection** | Stays out of active back-and-forth conversations between two people — but only if those messages are within the last 2 minutes |
-| 🚫 **Admin Tag Protection** | If someone tags a protected admin (`5pntjoe`, `strikezx`), the bot intercepts with a polite redirect to the website and ticket system. Does NOT trigger when someone simply replies to an admin's message |
+| 🚫 **Admin Tag Protection** | If a non-admin tags a protected admin (`5pntjoe`, `strikezx`), the bot intercepts with a polite redirect to the website and ticket system. Admins can tag each other. Does NOT trigger when someone simply replies to an admin's message |
 | ⏱️ **Spam Protection** | 30-second cooldown per user — won't flood the channel |
 | 🔁 **Answer Deduplication** | If the bot itself already answered the same question in the last 5 minutes in the same channel, it won't repeat itself. If a human answered (even incorrectly), the bot will still step in with the correct answer |
 | 💾 **Persistent Memory** | Every Q&A is stored permanently in a local SQLite database (`memory.db`). Survives restarts. Powers deduplication, history, follow-up awareness, and feedback tracking |
