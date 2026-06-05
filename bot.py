@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.5.3"
+CURRENT_VERSION   = "v1.5.4"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -519,6 +519,97 @@ bot              = commands.Bot(command_prefix="!cdn ", intents=intents, help_co
 anthropic_client = anthropic.AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 user_last_answered: dict[int, float] = defaultdict(float)
 
+# Anthropic API health (used for clear in-app status/warnings)
+_ai_api_issue_kind: str | None = None
+_ai_api_issue_detail: str = ""
+_ai_api_issue_since: float = 0.0
+_ai_api_last_success: float = 0.0
+_ai_api_last_error: float = 0.0
+_ai_api_consecutive_failures: int = 0
+
+
+def _format_age_short(seconds: int) -> str:
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h"
+
+
+def _classify_anthropic_issue(exc: Exception) -> tuple[str, str]:
+    """
+    Classify Anthropic failures so token/quota exhaustion gets a clear signal.
+    Returns: (kind, human_readable_detail)
+    """
+    raw = str(exc)
+    msg = raw.lower()
+    status = getattr(exc, "status_code", None) or getattr(exc, "status", None)
+
+    quota_markers = (
+        "credit balance is too low",
+        "insufficient credit",
+        "insufficient credits",
+        "out of credits",
+        "exceeded your current quota",
+        "quota",
+        "billing",
+    )
+
+    if status in (401, 403) or "invalid x-api-key" in msg or "authentication" in msg:
+        return "auth", "Invalid/missing Anthropic API key or permission denied"
+
+    if status == 429:
+        if any(marker in msg for marker in quota_markers):
+            return "quota", "Anthropic credits/quota exhausted (out of tokens/credits)"
+        return "rate_limit", "Anthropic rate limit hit (too many requests)"
+
+    if any(marker in msg for marker in quota_markers):
+        return "quota", "Anthropic credits/quota exhausted (out of tokens/credits)"
+
+    if isinstance(status, int) and status >= 500:
+        return "service", "Anthropic service temporarily unavailable"
+
+    return "api", raw[:220] if raw else "Unknown Anthropic API error"
+
+
+async def _claude_create(**kwargs):
+    """Wrapper around Anthropic calls with centralized health/error tracking."""
+    global _ai_api_issue_kind, _ai_api_issue_detail, _ai_api_issue_since
+    global _ai_api_last_success, _ai_api_last_error, _ai_api_consecutive_failures
+
+    try:
+        resp = await anthropic_client.messages.create(**kwargs)
+        _ai_api_last_success = time.time()
+        _ai_api_consecutive_failures = 0
+        if _ai_api_issue_kind is not None:
+            _log("Anthropic API recovered — responses should work normally again", "ok")
+        _ai_api_issue_kind = None
+        _ai_api_issue_detail = ""
+        _ai_api_issue_since = 0.0
+        return resp
+    except Exception as exc:
+        now = time.time()
+        _ai_api_last_error = now
+        _ai_api_consecutive_failures += 1
+
+        kind, detail = _classify_anthropic_issue(exc)
+
+        first_time_this_issue = (_ai_api_issue_kind != kind)
+        _ai_api_issue_kind = kind
+        _ai_api_issue_detail = detail
+        if first_time_this_issue:
+            _ai_api_issue_since = now
+
+        if first_time_this_issue:
+            lvl = "error" if kind in {"auth", "quota"} else "warn"
+            _log(f"Anthropic API issue detected ({kind}):  {detail}", lvl)
+            if kind == "quota":
+                _log("⚠️ Anthropic tokens/credits appear exhausted — top up billing to restore answers.", "error")
+        elif _ai_api_consecutive_failures in {3, 10}:
+            _log(f"Anthropic API still failing ({kind})  —  {_ai_api_consecutive_failures} consecutive errors", "warn")
+
+        raise
+
 
 # ─────────────────────────────────────────────
 #  Reference channel cache
@@ -843,7 +934,7 @@ async def extract_structured_knowledge() -> None:
         prompt  = _EXTRACTION_PROMPT + combined
 
         try:
-            resp = await anthropic_client.messages.create(
+            resp = await _claude_create(
                 model="claude-sonnet-4-6",
                 max_tokens=8192,
                 temperature=0,
@@ -909,7 +1000,7 @@ Website content:
 {combined}"""
 
     try:
-        resp = await anthropic_client.messages.create(
+        resp = await _claude_create(
             model="claude-sonnet-4-6",
             max_tokens=500,
             temperature=0,
@@ -1389,7 +1480,7 @@ async def _bm_claude_check(content: str) -> bool:
     Fails safe — returns False on any API error (never deletes on uncertainty).
     """
     try:
-        resp = await anthropic_client.messages.create(
+        resp = await _claude_create(
             model="claude-sonnet-4-6",
             max_tokens=5,
             temperature=0,
@@ -1722,7 +1813,7 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
         content_blocks = text_part
 
     try:
-        resp = await anthropic_client.messages.create(
+        resp = await _claude_create(
             model="claude-sonnet-4-6",
             max_tokens=4096,
             system=system_prompt,
@@ -1955,7 +2046,7 @@ Recent channel context:
     user_content = content or "(no text)"
 
     try:
-        resp = await anthropic_client.messages.create(
+        resp = await _claude_create(
             model="claude-sonnet-4-6",
             max_tokens=1500,
             system=system_prompt,
@@ -2177,7 +2268,7 @@ async def on_message(message: discord.Message):
             await set_paused(True)
             _log("Bot paused  —  will no longer respond to the server", "warn")
             try:
-                resp = await anthropic_client.messages.create(
+                resp = await _claude_create(
                     model="claude-sonnet-4-6",
                     max_tokens=100,
                     messages=[{"role": "user", "content":
@@ -2199,7 +2290,7 @@ async def on_message(message: discord.Message):
             await set_paused(False)
             _log("Bot resumed  —  back to watching all channels", "ok")
             try:
-                resp = await anthropic_client.messages.create(
+                resp = await _claude_create(
                     model="claude-sonnet-4-6",
                     max_tokens=100,
                     messages=[{"role": "user", "content":
@@ -2513,11 +2604,22 @@ async def cdn_ping(ctx: commands.Context):
     # Structured knowledge
     sk_lines = len(_structured_knowledge.splitlines()) if _structured_knowledge else 0
 
+    # Anthropic API health
+    if _ai_api_issue_kind:
+        since = _format_age_short(int(time.time() - _ai_api_issue_since)) if _ai_api_issue_since else "now"
+        api_health = f"⚠️ {_ai_api_issue_kind}: {_ai_api_issue_detail} · since {since}"
+    elif _ai_api_last_success:
+        ago = _format_age_short(int(time.time() - _ai_api_last_success))
+        api_health = f"✅ Healthy · last success {ago} ago"
+    else:
+        api_health = "ℹ️ No Anthropic request yet"
+
     embed = discord.Embed(title="🏓  CDN_Captain Health", color=discord.Color.green())
     embed.add_field(name="Latency",          value=f"{latency_ms}ms",  inline=True)
     embed.add_field(name="Uptime",           value=uptime_str,          inline=True)
     embed.add_field(name="Memory",           value=mem_str,             inline=True)
     embed.add_field(name="Website Crawl",    value=crawl_str,           inline=False)
+    embed.add_field(name="AI API",           value=api_health,          inline=False)
     embed.add_field(name="Structured Facts", value=f"{sk_lines} facts extracted", inline=True)
     embed.add_field(name="DB",               value=f"{db_answers} answers · {db_size}", inline=True)
     embed.add_field(name="Wipe Info",        value=_wipe_info[:80] + "..." if len(_wipe_info) > 80 else (_wipe_info or "⚠️ Not parsed"), inline=False)
@@ -2571,9 +2673,21 @@ async def cdn_status(ctx: commands.Context):
         else f"🔄 {ref_age//3600}h ago"
     )
 
+    if _ai_api_issue_kind:
+        if _ai_api_issue_since:
+            since = _format_age_short(int(now - _ai_api_issue_since))
+            api_str = f"⚠️ {_ai_api_issue_kind.upper()} · {_ai_api_issue_detail}\nSince: {since} ago"
+        else:
+            api_str = f"⚠️ {_ai_api_issue_kind.upper()} · {_ai_api_issue_detail}"
+    elif _ai_api_last_success:
+        api_str = f"✅ Healthy · last success {_format_age_short(int(now - _ai_api_last_success))} ago"
+    else:
+        api_str = "ℹ️ No Anthropic request yet"
+
     embed = discord.Embed(title=f"📊  {BOT_NAME} Status", color=discord.Color.green())
     embed.add_field(name="Website Crawl",      value=crawl_str, inline=False)
     embed.add_field(name="Reference Channel",  value=ref_str,   inline=False)
+    embed.add_field(name="AI API Health",      value=api_str,   inline=False)
     embed.add_field(name="Model",              value="Claude Sonnet (claude-sonnet-4-6)", inline=False)
     embed.add_field(name="Context Window",     value=f"{CONTEXT_MESSAGE_LIMIT} messages", inline=False)
     embed.add_field(name="Auto-crawl",         value=f"Every {AUTO_CRAWL_INTERVAL//60} minutes", inline=False)
