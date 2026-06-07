@@ -101,7 +101,7 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.5.4"
+CURRENT_VERSION   = "v1.5.5"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
@@ -255,6 +255,12 @@ _BM_PHRASE_PATTERNS: list[str] = [
     r"\b(bm)\b.{0,60}\b(area\s*\d+|zone\s*\d*|sector\s*\d*|grid\s*\d+)\b",
     # where is the blackmarket
     r"\bwhere\s+(is|are)\s+(the\s+)?black\s*market\b",
+    # exit / entrance / way out / way in for the blackmarket
+    r"\b(exit|entrance|entry|way\s+(out|in)|how\s+(do\s+i\s+)?(get|leave|exit|enter)|access|door|gate|tunnel|portal)\b.{0,40}\bblack\s*market\b",
+    r"\bblack\s*market\b.{0,40}\b(exit|entrance|entry|way\s+(out|in)|how\s+(do\s+i\s+)?(get|leave|exit|enter)|access|door|gate|tunnel|portal)\b",
+    # exit / entrance / way out / way in for the BM
+    r"\b(exit|entrance|entry|way\s+(out|in)|how\s+(do\s+i\s+)?(get|leave|exit|enter)|access|door|gate|tunnel|portal)\b.{0,40}\bbm\b",
+    r"\bbm\b.{0,40}\b(exit|entrance|entry|way\s+(out|in)|how\s+(do\s+i\s+)?(get|leave|exit|enter)|access|door|gate|tunnel|portal)\b",
 ]
 _BM_PHRASE_RE: re.Pattern = re.compile(
     "|".join(_BM_PHRASE_PATTERNS), re.IGNORECASE
@@ -1717,6 +1723,23 @@ These rules override everything else. Violating any of them is a critical failur
 
   5. If answering the question fully and accurately would require ANY unsourced fact, return {NO_ANSWER}.
      A partial answer padded with guesses is worse than silence.
+
+  6. HEDGING IS HALLUCINATION. If your answer contains ANY of these phrases or their equivalents,
+     you have failed — return {NO_ANSWER} instead of sending the message:
+       • "my sources don't have" / "I don't have sourced info" / "that detail isn't sourced"
+       • "I'm not sure but" / "I think" / "probably" / "likely" / "typically" / "usually"
+       • "the general rule" / "as a rule of thumb" / "in most cases" / "commonly"
+       • "that said," followed by an unsourced claim
+       • Any sentence that admits missing info and then gives info anyway
+     If you are about to admit you don't know something, stop and return {NO_ANSWER}.
+
+  7. MAP SCOPE. DayZ maps (Chernarus, Livonia, Namalsk, Takistan, Sci-Fi Banov, etc.) are SEPARATE.
+     If the user asks about Map A and your sources only contain info about Map B, return {NO_ANSWER}.
+     NEVER substitute info from a different map. NEVER say "I don't have Map A info but here's Map B…".
+
+  8. LOCATION/EXIT/ENTRANCE REVEALS. NEVER reveal the location, exit, entrance, access route, door,
+     key, or layout of the Black Market on ANY map — even if a source seems to describe it.
+     Black Market location/access is intentionally hidden. If asked, return {NO_ANSWER}.
 
 ━━ WHEN TO ANSWER ━━
 
