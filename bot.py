@@ -33,45 +33,39 @@ load_dotenv()
 from datetime import datetime, timezone
 
 _RST  = "\033[0m"
+_DIM  = "\033[2m"
 _BOLD = "\033[1m"
 _GRN  = "\033[92m"
 _YLW  = "\033[93m"
 _RED  = "\033[91m"
 _CYN  = "\033[96m"
+_BLU  = "\033[94m"
 _PRP  = "\033[95m"
 _GRY  = "\033[90m"
 _WHT  = "\033[97m"
 
-_LEVEL_ICON = {
-    "ok":    f"{_GRN}✔ {_RST}",
-    "warn":  f"{_YLW}⚠ {_RST}",
-    "error": f"{_RED}✖ {_RST}",
-    "info":  f"{_CYN}· {_RST}",
-    "skip":  f"{_GRY}· {_RST}",
-    "msg":   f"{_CYN}◆ {_RST}",
-    "crawl": f"{_YLW}⟳ {_RST}",
-}
-_LEVEL_COL = {
-    "ok":    _GRN,
-    "warn":  _YLW,
-    "error": _RED,
-    "info":  _WHT,
-    "skip":  _GRY,
-    "msg":   _CYN,
-    "crawl": _YLW,
+# Each level: (icon char, icon colour, text colour)
+_LEVEL = {
+    "ok":    ("✓", _GRN, _WHT),
+    "warn":  ("!", _YLW, _YLW),
+    "error": ("✗", _RED, _RED),
+    "info":  ("•", _CYN, _WHT),
+    "skip":  ("·", _GRY, _GRY),
+    "msg":   ("►", _BLU, _CYN),
+    "crawl": ("↻", _YLW, _WHT),
 }
 
 
 def _ts() -> str:
-    return datetime.now(timezone.utc).strftime("%H:%M:%S")
+    # Local time so it matches the operator's wall clock.
+    return datetime.now().strftime("%H:%M:%S")
 
 
 def _log(msg: str, level: str = "info") -> None:
     """Print a timestamped, human-readable line to the console."""
-    ts   = f"{_GRY}{_ts()}{_RST}"
-    icon = _LEVEL_ICON.get(level, "  ")
-    col  = _LEVEL_COL.get(level, _WHT)
-    print(f"  {ts}  {icon}{col}{msg}{_RST}")
+    icon_char, icon_col, text_col = _LEVEL.get(level, ("·", _GRY, _WHT))
+    ts = f"{_GRY}{_ts()}{_RST}"
+    print(f"  {ts}  {icon_col}{icon_char}{_RST}  {text_col}{msg}{_RST}")
 
 
 def _print_banner() -> None:
@@ -85,11 +79,17 @@ def _print_banner() -> None:
 
 def _print_ready(guild_name: str) -> None:
     """'All systems go' banner — printed after full startup completes."""
+    muted = len(IGNORED_CHANNEL_IDS)
+    muted_note = (
+        f"  ({muted} channel muted)" if muted == 1
+        else f"  ({muted} channels muted)" if muted > 1
+        else ""
+    )
     print()
-    print(f"  {_GRN}{_BOLD}  ✅  CDN_Captain is LIVE  ·  {guild_name}{_RST}")
-    print(f"  {_GRY}     Watching all channels — ready to answer questions{_RST}")
+    print(f"  {_GRN}{_BOLD}  ✓  Online and listening on  {guild_name}{_RST}")
+    print(f"  {_GRY}     Reading every channel{muted_note} — only speaks when it has a sourced answer{_RST}")
     print()
-    print(f"  {_GRY}── Live Activity ───────────────────────────────────────────────────{_RST}")
+    print(f"  {_GRY}── Live activity ──────────────────────────────────────────────────{_RST}")
     print()
 
 
@@ -101,10 +101,12 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.5.6"
+CURRENT_VERSION   = "v1.5.7"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
+AI_MAIN_MODEL     = os.getenv("ANTHROPIC_MAIN_MODEL", "claude-sonnet-4-6")
+AI_CHEAP_MODEL    = os.getenv("ANTHROPIC_CHEAP_MODEL", "claude-3-5-haiku-latest")
 
 # Update check state
 _update_available: bool = False
@@ -170,6 +172,12 @@ KEYWORD_EXPANSIONS: dict[str, set[str]] = {
 REFERENCE_CHANNEL_ID        = 1340937408434405437
 REFERENCE_CHANNEL_LINK      = "https://discord.com/channels/1076024408503762974/1340937408434405437"
 TICKET_CHANNEL_ID           = 1340937937940119602
+
+# Channels the bot must NEVER read, react to, or post in — full hard mute.
+# Add channel IDs here (right-click channel in Discord → Copy Channel ID).
+IGNORED_CHANNEL_IDS: set[int] = {
+    1084687416104865803,   # moderator-only channel
+}
 REFERENCE_CHANNEL_MSG_LIMIT = 120
 REF_CHANNEL_CACHE_TTL       = 1800
 
@@ -487,7 +495,7 @@ async def _claude_create(**kwargs):
         _ai_api_last_success = time.time()
         _ai_api_consecutive_failures = 0
         if _ai_api_issue_kind is not None:
-            _log("Anthropic API recovered — responses should work normally again", "ok")
+            _log("Anthropic is back online — answers should work normally again", "ok")
         _ai_api_issue_kind = None
         _ai_api_issue_detail = ""
         _ai_api_issue_since = 0.0
@@ -507,11 +515,11 @@ async def _claude_create(**kwargs):
 
         if first_time_this_issue:
             lvl = "error" if kind in {"auth", "quota"} else "warn"
-            _log(f"Anthropic API issue detected ({kind}):  {detail}", lvl)
+            _log(f"Anthropic problem ({kind}):  {detail}", lvl)
             if kind == "quota":
-                _log("⚠️ Anthropic tokens/credits appear exhausted — top up billing to restore answers.", "error")
+                _log("Anthropic credits look exhausted — top up billing to start answering again.", "error")
         elif _ai_api_consecutive_failures in {3, 10}:
-            _log(f"Anthropic API still failing ({kind})  —  {_ai_api_consecutive_failures} consecutive errors", "warn")
+            _log(f"Anthropic is still failing ({kind}) — {_ai_api_consecutive_failures} errors in a row", "warn")
 
         raise
 
@@ -840,7 +848,7 @@ async def extract_structured_knowledge() -> None:
 
         try:
             resp = await _claude_create(
-                model="claude-sonnet-4-6",
+                model=AI_CHEAP_MODEL,
                 max_tokens=8192,
                 temperature=0,
                 messages=[{"role": "user", "content": prompt}],
@@ -906,7 +914,7 @@ Website content:
 
     try:
         resp = await _claude_create(
-            model="claude-sonnet-4-6",
+            model=AI_CHEAP_MODEL,
             max_tokens=500,
             temperature=0,
             messages=[{"role": "user", "content": prompt}],
@@ -1174,6 +1182,73 @@ def build_rich_context(msgs: list[discord.Message], exclude_id: int) -> str:
     return "\n".join(lines) if lines else "(no recent context)"
 
 
+async def should_attempt_answer(
+    message: discord.Message,
+    recent_msgs: list[discord.Message],
+    has_images: bool,
+    channel_name: str,
+) -> bool:
+    """
+    Cheap permissive gate that skips only obvious non-answer cases before the
+    expensive knowledge-loading and answer-generation path.
+    """
+    if has_images:
+        return True
+
+    if message.reference and message.reference.resolved:
+        ref = message.reference.resolved
+        if isinstance(ref, discord.Message) and bot.user and ref.author == bot.user:
+            return True
+
+    recent_slice = recent_msgs[-5:]
+    short_ctx = build_rich_context(recent_slice, exclude_id=message.id)
+    user_text = message.content.strip() or "(no text)"
+
+    system_prompt = """You are a classifier for a Discord support bot.
+
+Return exactly one word:
+ANSWER
+or
+SKIP
+
+Return ANSWER if the message is plausibly a real CDNDayz or DayZ help question that may need a sourced answer.
+
+Return SKIP only for obvious non-answer cases such as:
+- casual chat, reactions, jokes, greetings, or banter
+- messages clearly directed at another player instead of the bot
+- non-server topics with no CDNDayz or DayZ relevance
+- questions already clearly answered by another user in the nearby context
+
+Be permissive. If unsure, return ANSWER.
+Do not answer the user. Do not explain. Output one word only."""
+
+    user_prompt = (
+        f"Channel: #{channel_name}\n"
+        f"Recent context:\n{short_ctx}\n\n"
+        f"Current message from {message.author.display_name}:\n{user_text}"
+    )
+
+    try:
+        resp = await _claude_create(
+            model=AI_CHEAP_MODEL,
+            max_tokens=5,
+            temperature=0,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+        decision = resp.content[0].text.strip().upper()
+        if decision.startswith("SKIP"):
+            _log("Stayed silent — cheap gate classified this as non-answer-worthy", "skip")
+            return False
+        if decision.startswith("ANSWER"):
+            return True
+        _log(f"Cheap gate returned an unexpected result: {decision[:40]} — allowing full answer path", "warn")
+        return True
+    except Exception as exc:
+        _log(f"Cheap gate failed, allowing full answer path:  {exc}", "warn")
+        return True
+
+
 async def fetch_reply_chain(message: discord.Message) -> list[dict]:
     """
     Walk backwards through the reply chain and collect every message in it.
@@ -1223,18 +1298,17 @@ def get_all_image_attachments(message: discord.Message) -> list:
     """
     images = []
 
-    # 1. Direct file attachments
+    # 1. Direct file attachments  (logged collectively in the message header,
+    #    so we stay silent here to avoid noisy per-image lines)
     for att in message.attachments:
         ct  = (att.content_type or "").lower().split(";")[0].strip()
         ext = os.path.splitext(att.filename.lower())[1]
         if ct in SUPPORTED_IMAGE_TYPES or ext in EXT_TO_MEDIA_TYPE:
-            _log(f"Reading screenshot:  {att.filename}", "skip")
             images.append(att)
 
     # 2. Image embeds
     for embed in message.embeds:
         if embed.type == "image" and embed.url:
-            _log(f"Reading image from embed:  {embed.url}", "skip")
             class _EmbedImageProxy:
                 url      = embed.url
                 filename = embed.url.split("?")[0].split("/")[-1] or "image.png"
@@ -1254,7 +1328,7 @@ async def download_image(url: str, session: aiohttp.ClientSession) -> tuple[str,
             data       = await resp.read()
             return base64.standard_b64encode(data).decode("utf-8"), media_type
     except Exception as exc:
-        _log(f"Screenshot download failed:  {exc}", "warn")
+        _log(f"Could not download a screenshot:  {exc}", "warn")
         return None
 
 
@@ -1372,13 +1446,16 @@ async def evaluate_and_answer(
 
     site_index = build_site_index()
 
-    # Build a live list of all text channels in the guild for the system prompt
+    # Build a live list of all text channels in the guild for the system prompt.
+    # Channels in IGNORED_CHANNEL_IDS (e.g. moderator-only) are excluded so Claude
+    # cannot reference them in answers shown to regular users.
     if message.guild:
         channel_list_lines = []
         for cat in sorted(message.guild.categories, key=lambda c: c.position):
             visible = [
                 ch for ch in cat.channels
                 if isinstance(ch, discord.TextChannel)
+                and ch.id not in IGNORED_CHANNEL_IDS
             ]
             if visible:
                 channel_list_lines.append(f"  [{cat.name}]")
@@ -1387,7 +1464,9 @@ async def evaluate_and_answer(
         # Channels not in any category
         uncategorised = [
             ch for ch in message.guild.channels
-            if isinstance(ch, discord.TextChannel) and ch.category is None
+            if isinstance(ch, discord.TextChannel)
+            and ch.category is None
+            and ch.id not in IGNORED_CHANNEL_IDS
         ]
         if uncategorised:
             channel_list_lines.append("  [No Category]")
@@ -1451,11 +1530,22 @@ These rules override everything else. Violating any of them is a critical failur
   6. HEDGING IS HALLUCINATION. If your answer contains ANY of these phrases or their equivalents,
      you have failed — return {NO_ANSWER} instead of sending the message:
        • "my sources don't have" / "I don't have sourced info" / "that detail isn't sourced"
+       • "my sources don't publish/list/mention/specify/cover/include"
+       • "I can't give you an exact/specific/precise [anything]"
+       • "what I CAN tell you is..." / "what I do know is..." (pivot to a tangent)
+       • "for the most up-to-date info, check..." / "keep an eye on..." / "stay tuned to..."
        • "I'm not sure but" / "I think" / "probably" / "likely" / "typically" / "usually"
        • "the general rule" / "as a rule of thumb" / "in most cases" / "commonly"
        • "that said," followed by an unsourced claim
        • Any sentence that admits missing info and then gives info anyway
      If you are about to admit you don't know something, stop and return {NO_ANSWER}.
+
+  6b. NO TANGENTS. Answer ONLY the question that was asked.
+     • If the user asks about topic A and your sources only cover topic B, return {NO_ANSWER}.
+     • NEVER bring up a different error code, rule, or fact "in case it's helpful" — that is a tangent.
+     • NEVER pad an "I can't answer that" with related-but-unrequested info.
+     • Example failure: user asks "when does Deer Isle restart?" → you don't have the schedule →
+       you must NOT mention error 0x00040010, or #announcements, or anything else. Just {NO_ANSWER}.
 
   7. MAP SCOPE. DayZ maps (Chernarus, Livonia, Namalsk, Takistan, Sci-Fi Banov, etc.) are SEPARATE.
      If the user asks about Map A and your sources only contain info about Map B, return {NO_ANSWER}.
@@ -1484,8 +1574,11 @@ Stay silent (return {NO_ANSWER}) if ANY of the following is true:
 ⚠️ CRITICAL — NO FALLBACK RESPONSES:
   • NEVER say "check discord-rules", "open a ticket", "ask in chat", "ask the admins",
     or any variation of "I don't know but here's where to look"
+  • NEVER point users to ANY channel (#announcements, #rules, #info, etc.) as a substitute
+    for an answer. Pointing to a channel = admission you don't have the answer = {NO_ANSWER}.
   • NEVER suggest asking specific players or community members
   • NEVER give a vague "your best bet is..." response
+  • NEVER answer an adjacent/related question when you can't answer the actual one
   • If you cannot give a direct, fully-sourced, confident answer — return {NO_ANSWER}, nothing else
   • The admin tag protection already handles ticket/admin redirects — that is NOT your job
   • You are either useful or invisible. There is no middle ground.
@@ -1561,7 +1654,7 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
 
     try:
         resp = await _claude_create(
-            model="claude-sonnet-4-6",
+            model=AI_MAIN_MODEL,
             max_tokens=4096,
             system=system_prompt,
             messages=[{"role": "user", "content": content_blocks}],
@@ -1571,7 +1664,7 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
 
         # Silent check
         if raw.upper().startswith(NO_ANSWER):
-            _log(f"Stayed silent  —  \"{label}\"", "skip")
+            _log("Stayed silent — no sourced answer", "skip")
             return None
 
         # Parse optional CONFIDENCE:X header
@@ -1582,11 +1675,8 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
             confidence = int(conf_match.group(1))
             answer     = conf_match.group(2).strip()
             if confidence < 6 and not force:
-                _log(f"Not confident enough to answer ({confidence}/10)  —  \"{label}\"", "skip")
+                _log(f"Stayed silent — confidence too low ({confidence}/10)", "skip")
                 return None
-            _log(f"Answering  (confidence {confidence}/10)  —  \"{label}\"", "ok")
-        else:
-            _log(f"Answering  —  \"{label}\"", "ok")
 
         # Re-check after stripping confidence header
         if not answer or answer.upper().startswith(NO_ANSWER):
@@ -1596,35 +1686,51 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
         # the model's NO_ANSWER instruction. These phrases mean the bot has nothing
         # sourced to say and is making up a friendly redirect instead of staying silent.
         _DEFLECTION_PATTERNS = [
-            r"don'?t have (specific |that )?(info|information|details?)",
-            r"(that'?s |this is )not something i have",
-            r"(not in|not from) (my |our |the )?(server |site |)docs",
-            r"your best bet (is|would be)",
+            # "I don't have X" family
+            r"don'?t have (specific |that |any )?(info|information|details?|sources?)",
+            r"don'?t (publish|list|have|show|specify|mention|state|cover|include)\b[^.]{0,60}\b(in my sources?|in (the |my )?(docs|sources|info|website|content)|on (the )?(website|site|docs)|sourced)",
+            r"\bin my sources?\b",
+            r"\bnot (sourced|in my sources)\b",
+            r"(that'?s |this is )not (something i have|in (my |our |the )?(sources?|docs|info))",
+            r"(not in|not from|not (listed|mentioned|stated|specified|covered|included)) (my |our |the )?(server |site |)docs",
+            r"(not (listed|mentioned|stated|specified|covered|included)) (in|on) (my |our |the )?(sources?|docs|website|site)",
+            # "Can't help you fully" family
+            r"can'?t (find|locate|confirm|give|provide|tell|share) (you )?(that|this|any|an? )?(info|information|detail|exact|specific|precise|schedule|answer|details?|times?)",
+            r"can'?t give you (a |an )?(exact|specific|precise|definitive|full|complete)",
+            r"(don'?t|can'?t|won'?t) (be able to )?give you (an? )?(exact|specific|precise|definitive)",
+            r"(unfortunately|sadly|sorry,?) (i )?(don'?t|can'?t|do not|cannot)",
+            # Pivot to unrelated tangent ("what I CAN tell you is...")
+            r"what i can tell you (is|though)",
+            r"what i (do )?know (is|though)",
+            r"(here'?s )?what i can (offer|share|say)",
+            # "Where to look" redirects (the explicit fallback ban)
+            r"(check|look (in|at)|head (over )?to|head to|keep an eye on|stay tuned to|watch) (the )?(#|<#|discord|server|channel|announcements?|rules|info|chat)",
+            r"(for|to get) (the )?(most )?(up[- ]?to[- ]?date|latest|current|accurate) (info|information|details?|answer|restart|schedule|wipe|news)",
+            r"(your )?best bet (is|would be|to)",
             r"(would be|is) a better person to answer",
-            r"he'?d be a better",
-            r"she'?d be a better",
-            r"i('?d| would) (suggest|recommend) (asking|checking with)",
-            r"(ask|check with) (toby|morningstar|an admin|the admins|staff|a mod)",
-            r"can'?t (find|locate|confirm) (that|this|any) (info|information|detail)",
-            r"(check|look in) (the )?(discord|#|server)",
+            r"(he|she|they)'?d be a better",
+            r"i('?d| would) (suggest|recommend) (asking|checking|reaching|talking|messaging|posting)",
+            r"(ask|check with|reach out to|message|dm|tag) (toby|morningstar|an admin|the admins|staff|a mod|the mods|the team|someone)",
             r"open (a )?ticket",
-            r"i('?m| am) not sure (about|of) (that|this)",
-            r"(can vary|depends on) (the server|setup|configuration)",
+            # Generic hedges
+            r"i('?m| am) not (sure|certain|positive) (about|of|what|when|how|why|where)",
+            r"\b(can vary|may vary|might vary|depends on) (the server|setup|configuration|map|wipe)",
+            r"\bnot 100% (sure|certain)\b",
         ]
         answer_lc = answer.lower()
         for pat in _DEFLECTION_PATTERNS:
             if re.search(pat, answer_lc):
-                _log(f"Suppressed deflection response  —  \"{label}\"", "skip")
+                _log("Stayed silent — reply looked like a deflection", "skip")
                 return None
 
-        # Store confidence so it can be logged to DB
+        # Store confidence so it can be logged to DB / shown on the reply line
         evaluate_and_answer._last_confidence = confidence
         return answer
     except anthropic.APIError as exc:
-        _log(f"AI API error:  {exc}", "error")
+        _log(f"Claude refused this request:  {exc}", "error")
         return None
     except Exception as exc:
-        _log(f"AI error:  {exc}", "error")
+        _log(f"Couldn't reach Claude:  {exc}", "error")
         return None
 
 
@@ -1794,16 +1900,16 @@ Recent channel context:
 
     try:
         resp = await _claude_create(
-            model="claude-sonnet-4-6",
+            model=AI_CHEAP_MODEL,
             max_tokens=1500,
             system=system_prompt,
             messages=[{"role": "user", "content": user_content}],
         )
         answer = resp.content[0].text.strip()
-        _log(f"Personal assistant  —  replied to {message.author.display_name}:  \"{content[:55]}\"", "ok")
+        _log(f"Owner reply sent to {message.author.display_name}", "ok")
         return answer
     except Exception as exc:
-        _log(f"Personal assistant error:  {exc}", "error")
+        _log(f"Owner-mode error:  {exc}", "error")
         return None
 
 
@@ -1821,7 +1927,7 @@ async def _send_with_retry(coro_fn, max_retries: int = 3) -> discord.Message:
         except discord.errors.HTTPException as exc:
             if exc.status == 429 and attempt < max_retries:
                 retry_after = getattr(exc, "retry_after", None) or (2 ** attempt)
-                _log(f"Discord rate limit — waiting {retry_after:.1f}s before retrying  (attempt {attempt}/{max_retries})", "warn")
+                _log(f"Discord asked us to slow down — waiting {retry_after:.1f}s before retry  (attempt {attempt}/{max_retries})", "warn")
                 await asyncio.sleep(retry_after)
             else:
                 raise
@@ -1845,9 +1951,9 @@ async def _update_check_loop():
                         latest = data.get("tag_name", "")
                         _update_available = latest not in ("", CURRENT_VERSION)
                         if _update_available:
-                            _log(f"Update available!  {latest} is out  (you're running {CURRENT_VERSION})  →  {GITHUB_RELEASES_URL}", "warn")
+                            _log(f"Update available  —  {latest} is out (you're on {CURRENT_VERSION})  →  {GITHUB_RELEASES_URL}", "warn")
         except Exception as exc:
-            _log(f"Could not check for updates:  {exc}", "warn")
+            _log(f"Could not check GitHub for updates:  {exc}", "warn")
         await asyncio.sleep(3600)  # re-check every hour
 
 
@@ -1857,7 +1963,9 @@ async def _send_answer(message: discord.Message, answer: str) -> discord.Message
     if _update_available:
         footer += f"\n-# ⬆️ [Bot update available](<{GITHUB_RELEASES_URL}>)"
     sent = await _send_with_retry(lambda: message.reply(answer + footer, mention_author=True))
-    _log(f"Replied  ({len(answer.split())} words)", "ok")
+    conf = getattr(evaluate_and_answer, "_last_confidence", None)
+    conf_tag = f"  ·  confidence {conf}/10" if isinstance(conf, int) else ""
+    _log(f"Replied  ({len(answer.split())} words){conf_tag}", "ok")
     return sent
 
 
@@ -1919,34 +2027,34 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 @bot.event
 async def on_ready():
     _print_banner()
-    _log(f"Connected to Discord as {bot.user}  ·  {BOT_NAME}", "ok")
+    _log(f"Logged in as  {bot.user}", "ok")
     for guild in bot.guilds:
-        _log(f"Joined server:  {guild.name}", "info")
-    _log("Setting up answer memory...", "info")
+        _log(f"Connected to server:  {guild.name}", "info")
+    _log("Step 1/5 — opening answer memory (memory.db)", "info")
     await init_db()
     global _bot_paused, _structured_knowledge, _wipe_info
     _bot_paused = await get_paused()
     if _bot_paused:
-        _log("Starting in PAUSED mode  —  bot will not respond to the server", "warn")
+        _log("Bot is currently PAUSED — it will stay silent until you resume it", "warn")
     # Restore last-known facts from DB so the bot can answer immediately
     # while the fresh crawl runs — eliminates the ~90s blind window on restart
     cached_sk = await db_get_state("structured_knowledge")
     cached_wi = await db_get_state("wipe_info")
     if cached_sk:
         _structured_knowledge = cached_sk
-        _log(f"Cached knowledge loaded  —  {len(_structured_knowledge.splitlines())} facts from last run", "ok")
+        _log(f"Loaded {len(_structured_knowledge.splitlines())} cached facts from the last run — ready to answer immediately", "ok")
     if cached_wi:
         _wipe_info = cached_wi
-        _log("Cached wipe schedule loaded from last run", "ok")
+        _log("Loaded cached wipe schedule from the last run", "ok")
     bot.loop.create_task(_auto_crawl_loop())
     bot.loop.create_task(_update_check_loop())
-    _log("Loading website knowledge...", "info")
+    _log("Step 2/5 — reading cdndayz.com (this takes a few seconds)", "info")
     await crawl_site(None)
-    _log("Extracting rules, facts & server info...", "info")
+    _log("Step 3/5 — extracting rules, facts and server info", "info")
     await extract_structured_knowledge()
-    _log("Calculating wipe schedule...", "info")
+    _log("Step 4/5 — working out the wipe schedule", "info")
     await parse_wipe_schedule()
-    _log("Loading reference channel...", "info")
+    _log("Step 5/5 — reading the reference channel", "info")
     await fetch_reference_channel()
     guild_name = bot.guilds[0].name if bot.guilds else "Unknown Server"
     _print_ready(guild_name)
@@ -1957,10 +2065,19 @@ async def on_message(message: discord.Message):
     if message.author.bot:
         return
 
-    await bot.process_commands(message)
-
     if not isinstance(message.channel, (discord.TextChannel, discord.Thread)):
         return
+
+    # ── Hard mute: ignored channels (e.g. moderator-only) ─────────────
+    # Check both the channel itself and, for threads, the parent channel.
+    # Placed before process_commands so prefix commands are silent here too.
+    _ch_id        = message.channel.id
+    _parent_id    = getattr(getattr(message.channel, "parent", None), "id", None)
+    if _ch_id in IGNORED_CHANNEL_IDS or (_parent_id and _parent_id in IGNORED_CHANNEL_IDS):
+        return
+    # ──────────────────────────────────────────────────────────────────
+
+    await bot.process_commands(message)
 
     # ── Admin tag protection ───────────────────────────────────────────
     if mentions_admin(message) and not is_admin_author(message):
@@ -1988,19 +2105,9 @@ async def on_message(message: discord.Message):
         if any(p in msg_lower for p in PAUSE_PHRASES):
             _bot_paused = True
             await set_paused(True)
-            _log("Bot paused  —  will no longer respond to the server", "warn")
+            _log("Bot paused — will not respond in any channel until resumed", "warn")
             try:
-                resp = await _claude_create(
-                    model="claude-sonnet-4-6",
-                    max_tokens=100,
-                    messages=[{"role": "user", "content":
-                        f"{message.author.display_name} just told you (CDN_Captain) to stop responding to the server. "
-                        f"He said: \"{content}\". "
-                        f"Reply in 1 short sentence confirming you'll go quiet. "
-                        f"Be natural and a bit personality-driven. No quotes around your reply."
-                    }],
-                )
-                reply_text = resp.content[0].text.strip()
+                reply_text = "Going quiet now. Ping me when you want me back."
                 await _send_with_retry(lambda: message.reply(reply_text, mention_author=True))
             except Exception:
                 pass
@@ -2010,19 +2117,9 @@ async def on_message(message: discord.Message):
         if any(p in msg_lower for p in RESUME_PHRASES):
             _bot_paused = False
             await set_paused(False)
-            _log("Bot resumed  —  back to watching all channels", "ok")
+            _log("Bot resumed — watching channels again", "ok")
             try:
-                resp = await _claude_create(
-                    model="claude-sonnet-4-6",
-                    max_tokens=100,
-                    messages=[{"role": "user", "content":
-                        f"{message.author.display_name} just told you (CDN_Captain) to start responding to the server again. "
-                        f"He said: \"{content}\". "
-                        f"Reply in 1 short sentence confirming you're back. "
-                        f"Be natural and a bit personality-driven. No quotes around your reply."
-                    }],
-                )
-                reply_text = resp.content[0].text.strip()
+                reply_text = "Back on watch. I'll answer again when I've got something solid."
                 await _send_with_retry(lambda: message.reply(reply_text, mention_author=True))
             except Exception:
                 pass
@@ -2043,7 +2140,7 @@ async def on_message(message: discord.Message):
             try:
                 await _send_with_retry(lambda: message.reply(answer, mention_author=True))
             except discord.HTTPException as exc:
-                _log(f"Personal assistant reply failed:  {exc}", "error")
+                _log(f"Owner-mode reply failed:  {exc}", "error")
         return
 
     # ── Pause guard — ignore everyone else when paused ────────────────────────
@@ -2063,7 +2160,7 @@ async def on_message(message: discord.Message):
         if not is_question(content):
             return
         if is_directed_at_someone(message):
-            _log(f"Skipped  —  message is a reply to someone else", "skip")
+            _log("Stayed silent — the user was replying to another player", "skip")
             return
 
     # Cooldown (per user)
@@ -2074,7 +2171,7 @@ async def on_message(message: discord.Message):
 
     # Deduplication: skip if very similar question was answered recently in this channel
     if not has_images and await db_is_recently_answered(message.channel.id, content):
-        _log(f"Skipped  —  this question was already answered recently", "skip")
+        _log("Stayed silent — same question was answered here recently", "skip")
         return
 
     # Fetch conversation context
@@ -2089,11 +2186,11 @@ async def on_message(message: discord.Message):
         pass
     except discord.errors.DiscordServerError as exc:
         # Discord returned a 503 / temporary server error — skip this message silently
-        _log(f"Discord server error fetching channel history, skipping:  {exc}", "warn")
+        _log(f"Discord is having a wobble, skipping this message:  {exc}", "warn")
         return
     except Exception as exc:
         # Any other unexpected network/API error — log and skip rather than crash
-        _log(f"Unexpected error reading channel history:  {exc}", "warn")
+        _log(f"Hit an unexpected error reading channel history:  {exc}", "warn")
         return
     recent_msgs.reverse()
 
@@ -2102,7 +2199,10 @@ async def on_message(message: discord.Message):
 
     # Don't interrupt two-person convos unless they shared an image
     if two_person and not has_images:
-        _log("Skipped  —  two people are mid-conversation", "skip")
+        _log("Stayed silent — two players are mid-conversation", "skip")
+        return
+
+    if not await should_attempt_answer(message, recent_msgs, has_images, channel_name):
         return
 
     # Fetch reply chain + check if this is a follow-up to a previous bot answer
@@ -2160,9 +2260,11 @@ async def on_message(message: discord.Message):
             confidence   = last_conf,
             message_id   = sent.id,
         )
-        _log(f"Answer saved to memory  (record #{row_id})", "skip")
+        # Record id stored quietly — no log line needed; the "Replied" line above
+        # already confirms success to the operator.
+        _ = row_id
     except discord.HTTPException as exc:
-        _log(f"Failed to send reply:  {exc}", "error")
+        _log(f"Couldn't send reply on Discord:  {exc}", "error")
 
 
 # ─────────────────────────────────────────────
@@ -2345,7 +2447,7 @@ async def cdn_ping(ctx: commands.Context):
     embed.add_field(name="Structured Facts", value=f"{sk_lines} facts extracted", inline=True)
     embed.add_field(name="DB",               value=f"{db_answers} answers · {db_size}", inline=True)
     embed.add_field(name="Wipe Info",        value=_wipe_info[:80] + "..." if len(_wipe_info) > 80 else (_wipe_info or "⚠️ Not parsed"), inline=False)
-    embed.set_footer(text=f"Python {sys.version.split()[0]} · claude-sonnet-4-6")
+    embed.set_footer(text=f"Python {sys.version.split()[0]} · main {AI_MAIN_MODEL} · cheap {AI_CHEAP_MODEL}")
     await ctx.send(embed=embed)
 
 
@@ -2410,7 +2512,7 @@ async def cdn_status(ctx: commands.Context):
     embed.add_field(name="Website Crawl",      value=crawl_str, inline=False)
     embed.add_field(name="Reference Channel",  value=ref_str,   inline=False)
     embed.add_field(name="AI API Health",      value=api_str,   inline=False)
-    embed.add_field(name="Model",              value="Claude Sonnet (claude-sonnet-4-6)", inline=False)
+    embed.add_field(name="Models",             value=f"Main: {AI_MAIN_MODEL}\nCheap: {AI_CHEAP_MODEL}", inline=False)
     embed.add_field(name="Context Window",     value=f"{CONTEXT_MESSAGE_LIMIT} messages", inline=False)
     embed.add_field(name="Auto-crawl",         value=f"Every {AUTO_CRAWL_INTERVAL//60} minutes", inline=False)
     embed.set_footer(text="cdndayz.com")

@@ -40,7 +40,7 @@ No noise. No guessing. No "open a ticket." Either an instant, accurate answer, o
 ### 🧠 Intelligence
 | Feature | Detail |
 |---|---|
-| **Powered by Claude Sonnet** | One of the most capable AI models available — reasons across sources, applies rules to scenarios, handles nuanced questions |
+| **Split Model Routing** | Uses a stronger Claude model for user-facing answers and a cheaper model for background extraction, wipe parsing, and owner-mode replies |
 | **Semantic Understanding** | Expands keywords before searching — "trader" also searches "exclusion zone, safe zone, market" so the right content surfaces even when phrasing differs |
 | **TF-IDF Scoring** | Scores page relevance using term frequency-inverse document frequency, with exact hex error code matching getting a massive ranking bonus |
 | **Auto Question Detection** | Detects questions, error reports, problem statements, and server-topic messages — not just messages ending in `?` |
@@ -118,6 +118,17 @@ Feedback is stored permanently and visible via `!cdn history`.
 ---
 
 ## 🖥️ Installation
+
+### Optional cost controls
+
+You can override the Anthropic models in `.env`:
+
+```env
+ANTHROPIC_MAIN_MODEL=claude-sonnet-4-6
+ANTHROPIC_CHEAP_MODEL=claude-3-5-haiku-latest
+```
+
+Keep the stronger model on `ANTHROPIC_MAIN_MODEL` for normal server answers. Set `ANTHROPIC_CHEAP_MODEL` to your lowest-cost Anthropic model for background tasks.
 
 ### Option A — Download the .exe (Recommended)
 

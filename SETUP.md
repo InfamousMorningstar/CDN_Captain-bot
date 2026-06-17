@@ -31,7 +31,12 @@ Then open `.env` and replace the placeholder values:
 ```
 DISCORD_TOKEN=paste_your_discord_token_here
 ANTHROPIC_API_KEY=paste_your_anthropic_key_here
+ANTHROPIC_MAIN_MODEL=claude-sonnet-4-6
+ANTHROPIC_CHEAP_MODEL=claude-3-5-haiku-latest
 ```
+
+`ANTHROPIC_MAIN_MODEL` handles the real user-facing answers.
+`ANTHROPIC_CHEAP_MODEL` handles the cheaper background tasks and is the main cost-saving knob.
 
 ---
 
