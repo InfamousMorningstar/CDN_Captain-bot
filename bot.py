@@ -12,6 +12,7 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse, urldefrag
 from playwright.async_api import async_playwright, Browser
 import os
+import sys
 import re
 import asyncio
 import time
@@ -22,6 +23,7 @@ import hashlib
 import random
 import aiosqlite
 import io
+import json
 from collections import defaultdict
 from dotenv import load_dotenv
 
@@ -61,11 +63,31 @@ def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
 
+def _redact(text: str) -> str:
+    """
+    Strip known secrets from any string before it reaches a log/console. Cheap and
+    defensive — Anthropic/Discord errors don't normally echo credentials, but if one
+    ever does (or lands in an exception string), it must never be printed.
+    """
+    for secret in (DISCORD_TOKEN, ANTHROPIC_API_KEY):
+        if secret and secret in text:
+            text = text.replace(secret, "***redacted***")
+    return text
+
+
 def _log(msg: str, level: str = "info") -> None:
-    """Print a timestamped, human-readable line to the console."""
+    """Print a timestamped, human-readable line to the console (secrets redacted).
+    If LOG_FILE is configured, also append a plain structured record for debugging."""
+    msg = _redact(msg)
     icon_char, icon_col, text_col = _LEVEL.get(level, ("·", _GRY, _WHT))
     ts = f"{_GRY}{_ts()}{_RST}"
     print(f"  {ts}  {icon_col}{icon_char}{_RST}  {text_col}{msg}{_RST}")
+    if LOG_FILE:
+        try:
+            with open(LOG_FILE, "a", encoding="utf-8") as _f:
+                _f.write(f"{datetime.now(timezone.utc).isoformat()} [{level.upper():<5}] {msg}\n")
+        except Exception:
+            pass  # logging must never crash the bot
 
 
 def _print_banner() -> None:
@@ -101,12 +123,45 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CDN_WEBSITE       = "https://www.cdndayz.com"
 BOT_NAME          = "CDN_Captain"
 
-CURRENT_VERSION   = "v1.5.7"
+# ── Static knowledge file (optional) ──────────────────────────────────────────
+# If this file exists, the bot skips Playwright, the web crawl, and all Claude
+# extraction calls on startup. Just edit the file and restart the bot to update
+# its knowledge. Set KNOWLEDGE_FILE= in .env to use a different path.
+KNOWLEDGE_FILE    = os.getenv("KNOWLEDGE_FILE", "knowledge.txt")
+
+# Optional structured log file. If LOG_FILE is set, every console line is also
+# appended here as a plain, timestamped, level-tagged, secret-redacted record for
+# after-the-fact debugging. Empty by default (console-only, unchanged behavior).
+LOG_FILE          = os.getenv("LOG_FILE", "")
+
+CURRENT_VERSION   = "v1.5.8"
 GITHUB_RELEASES_API = "https://api.github.com/repos/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 GITHUB_RELEASES_URL = "https://github.com/InfamousMorningstar/CDN_Captain-bot/releases/latest"
 PORTFOLIO_URL     = "https://portfolio.ahmxd.net"
 AI_MAIN_MODEL     = os.getenv("ANTHROPIC_MAIN_MODEL", "claude-sonnet-4-6")
-AI_CHEAP_MODEL    = os.getenv("ANTHROPIC_CHEAP_MODEL", "claude-3-5-haiku-latest")
+AI_CHEAP_MODEL    = os.getenv("ANTHROPIC_CHEAP_MODEL", "claude-haiku-4-5-20251001")
+
+# ── Source-grounding gate (P0) ────────────────────────────────────────────────
+# An independent verifier re-checks that each answer is actually supported by the
+# sources — a real safety net instead of trusting the model's self-graded score.
+# Ships in SHADOW mode by default: it logs what it *would* suppress without changing
+# behavior, so you can review over-silencing before enforcing. Flip to enforce once
+# the shadow log looks right.
+GROUNDING_GATE_ENFORCE = os.getenv("GROUNDING_GATE_ENFORCE", "0").strip().lower() in {"1", "true", "yes", "on"}
+# Every suppressed (or would-suppress) answer is appended here — each line is a KB
+# gap to backfill into knowledge.txt and seed the golden-question set with.
+SUPPRESSED_LOG_PATH    = os.getenv("SUPPRESSED_LOG_PATH", "suppressed_answers.jsonl")
+
+# ── Community answer feedback (P1) ────────────────────────────────────────────
+# The bot seeds 👍/👎 on its own answers so anyone can flag a bad one — turning
+# community corrections into a signal instead of a lucky catch in chat. Votes are
+# recorded once per user; crossing the downvote threshold alerts the owner and logs
+# the answer as a KB gap. Community votes NEVER auto-delete (troll-safe); only an
+# admin ❌ deletes an answer.
+FEEDBACK_UP_EMOJI   = "👍"
+FEEDBACK_DOWN_EMOJI = "👎"
+FEEDBACK_DOWNVOTE_ALERT_THRESHOLD = int(os.getenv("FEEDBACK_DOWNVOTE_ALERT_THRESHOLD", "3"))
+FLAGGED_LOG_PATH    = os.getenv("FLAGGED_LOG_PATH", "flagged_answers.jsonl")
 
 # Update check state
 _update_available: bool = False
@@ -121,6 +176,7 @@ TOP_PAGES_FOR_ANSWER        = 6     # more sources fed to Claude
 CHARS_PER_PAGE              = 5000  # more content per page
 MAX_MESSAGE_AGE_SECONDS     = 90
 TWO_PERSON_CONVO_WINDOW     = 10
+KB_HEALTH_CHECK_INTERVAL    = 1800  # re-check knowledge-base health every 30 min (seconds)
 
 # ── Sidekick mode ──────────────────────────────────────────────────────────────
 # Only this exact user ID can activate sidekick mode. User ID never changes and
@@ -128,7 +184,6 @@ TWO_PERSON_CONVO_WINDOW     = 10
 # To find your ID: Discord Settings → Advanced → Developer Mode ON,
 # then right-click your profile → Copy User ID.
 SIDEKICK_USER_ID = 699763177315106836
-SIDEKICK_USERNAME = "infamous_morningstar"   # fallback display name check
 # ───────────────────────────────────────────────────────────────────────────────
 
 # Global pause flag — only Infamous_Morningstar can toggle this
@@ -246,7 +301,8 @@ async def init_db() -> None:
                 answer        TEXT    NOT NULL,
                 confidence    INTEGER DEFAULT NULL,
                 marked_correct INTEGER DEFAULT NULL,
-                message_id    INTEGER DEFAULT NULL
+                message_id    INTEGER DEFAULT NULL,
+                grounded      INTEGER DEFAULT NULL
             )
         """)
         await db.execute("""
@@ -255,7 +311,24 @@ async def init_db() -> None:
                 value TEXT NOT NULL
             )
         """)
+        # Per-user community feedback votes on answers (one vote per user per answer).
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS answer_feedback (
+                message_id INTEGER NOT NULL,
+                user_id    INTEGER NOT NULL,
+                vote       INTEGER NOT NULL,      -- +1 = 👍, -1 = 👎
+                timestamp  REAL    NOT NULL,
+                PRIMARY KEY (message_id, user_id)
+            )
+        """)
         await db.commit()
+        # Migration for databases created before the `grounded` column existed.
+        # ALTER fails harmlessly if the column is already present.
+        try:
+            await db.execute("ALTER TABLE qa_log ADD COLUMN grounded INTEGER DEFAULT NULL")
+            await db.commit()
+        except Exception:
+            pass
     _log("Answer memory is ready  (memory.db)", "ok")
 
 
@@ -317,16 +390,17 @@ async def db_log_answer(
     answer:       str,
     confidence:   int | None = None,
     message_id:   int | None = None,
+    grounded:     int | None = None,
 ) -> int:
     """Insert a Q&A record and return its row ID."""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """INSERT INTO qa_log
                (timestamp, guild_id, channel_id, channel_name,
-                author_id, author_name, question, answer, confidence, message_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                author_id, author_name, question, answer, confidence, message_id, grounded)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (time.time(), guild_id, channel_id, channel_name,
-             author_id, author_name, question, answer, confidence, message_id),
+             author_id, author_name, question, answer, confidence, message_id, grounded),
         )
         await db.commit()
         return cursor.lastrowid
@@ -359,6 +433,31 @@ async def db_mark_feedback(message_id: int, correct: bool) -> str | None:
         return row[1]
 
 
+async def db_record_feedback_vote(message_id: int, user_id: int, vote: int) -> tuple[int, int]:
+    """
+    Record one user's 👍/👎 vote on an answer (idempotent per user — re-voting just
+    updates it). Returns (up_count, down_count) for the answer after recording.
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO answer_feedback (message_id, user_id, vote, timestamp) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(message_id, user_id) DO UPDATE SET "
+            "vote = excluded.vote, timestamp = excluded.timestamp",
+            (message_id, user_id, vote, time.time()),
+        )
+        await db.commit()
+        async with db.execute(
+            "SELECT "
+            "  COALESCE(SUM(CASE WHEN vote > 0 THEN 1 ELSE 0 END), 0), "
+            "  COALESCE(SUM(CASE WHEN vote < 0 THEN 1 ELSE 0 END), 0) "
+            "FROM answer_feedback WHERE message_id = ?",
+            (message_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    return (row[0] or 0, row[1] or 0)
+
+
 async def db_is_recently_answered(channel_id: int, question: str) -> bool:
     """
     True if the bot already answered a very similar question in this channel
@@ -388,13 +487,35 @@ async def db_get_by_message_id(message_id: int) -> dict | None:
     """Retrieve a logged Q&A by the bot's reply message ID."""
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute(
-            "SELECT question, answer, confidence FROM qa_log WHERE message_id = ?",
+            "SELECT question, answer, confidence, grounded, marked_correct "
+            "FROM qa_log WHERE message_id = ?",
             (message_id,),
         ) as cur:
             row = await cur.fetchone()
     if not row:
         return None
-    return {"question": row[0], "answer": row[1], "confidence": row[2]}
+    return {
+        "question":       row[0],
+        "answer":         row[1],
+        "confidence":     row[2],
+        "grounded":       row[3],
+        "marked_correct": row[4],
+    }
+
+
+def _is_replayable(prior: dict | None) -> bool:
+    """
+    A prior bot answer is safe to feed back as authoritative follow-up context ONLY if
+    it wasn't flagged ungrounded by the grounding gate or marked wrong by an admin.
+    This stops one hallucination from seeding the next ("so to recap…").
+    """
+    if not prior:
+        return False
+    if prior.get("grounded") == 0:        # grounding gate said unsupported
+        return False
+    if prior.get("marked_correct") == 0:  # an admin marked it wrong
+        return False
+    return True
 
 
 async def db_recent_history(channel_id: int, limit: int = 10) -> list[dict]:
@@ -558,9 +679,33 @@ async def fetch_reference_channel() -> str:
 # ─────────────────────────────────────────────
 #  Full-site crawler (Playwright JS rendering)
 # ─────────────────────────────────────────────
-_page_store:      dict[str, str] = {}
-_crawl_done_time: float          = 0.0
-_crawl_lock                      = asyncio.Lock()
+_page_store:           dict[str, str] = {}
+_crawl_done_time:      float          = 0.0
+_crawl_lock                           = asyncio.Lock()
+_using_knowledge_file: bool           = False
+
+
+# ── Knowledge-base health helpers ─────────────────────────────────────────────
+# The bot answers ONLY from its knowledge base, so an empty KB means it silently
+# goes mute. These helpers give a single source of truth for KB state, used by the
+# startup check, the runtime watchdog, and the status command.
+def kb_fact_count() -> int:
+    """Number of non-blank facts currently loaded in the structured knowledge base."""
+    if not _structured_knowledge:
+        return 0
+    return sum(1 for line in _structured_knowledge.splitlines() if line.strip())
+
+
+def kb_source_label() -> str:
+    """Human-readable label for where the bot's knowledge currently comes from."""
+    if _using_knowledge_file:
+        return f"static file ({KNOWLEDGE_FILE})"
+    return "live crawl (cdndayz.com)"
+
+
+def kb_health_line() -> str:
+    """One-line KB health summary for logs and status output."""
+    return f"source={kb_source_label()} · {kb_fact_count()} facts · {len(_page_store)} page(s)"
 
 
 def _extract_text(html: str) -> str:
@@ -679,6 +824,12 @@ async def crawl_site(session: aiohttp.ClientSession | None) -> None:
     Renders JS on every page so dynamic content (wipe schedules, etc.) is captured.
     """
     global _crawl_done_time
+    # In static knowledge-file mode the file IS the entire knowledge base — never
+    # crawl. Without this guard the per-message crawl_site() call would launch a full
+    # browser crawl (heavy, ~15s) and overwrite the knowledge-file content, because
+    # _crawl_done_time stays 0 in file mode and the cache check below never trips.
+    if _using_knowledge_file:
+        return
     async with _crawl_lock:
         if _page_store and (time.time() - _crawl_done_time) < CRAWL_CACHE_TTL:
             return
@@ -1211,15 +1362,23 @@ ANSWER
 or
 SKIP
 
-Return ANSWER if the message is plausibly a real CDNDayz or DayZ help question that may need a sourced answer.
+Return ANSWER if the message could plausibly be a help question about CDNDayz servers, DayZ gameplay, rules, wipes, bases, items, or anything server-related.
 
-Return SKIP only for obvious non-answer cases such as:
-- casual chat, reactions, jokes, greetings, or banter
-- messages clearly directed at another player instead of the bot
-- non-server topics with no CDNDayz or DayZ relevance
-- questions already clearly answered by another user in the nearby context
+Always return ANSWER for questions about:
+- wipe schedules or dates ("when is the wipe?", "next wipe?")
+- server rules, bans, or punishments
+- bases, vehicles, or items
+- how to join or connect to a server
+- tickets, reports, or support
+- errors, crashes, or technical issues
+- DayZ mechanics or mods used on CDN servers
 
-Be permissive. If unsure, return ANSWER.
+Return SKIP only for clearly obvious non-answer cases:
+- pure casual chat with no question (reactions, "lol", "gn everyone", greetings)
+- messages with no DayZ or server relevance whatsoever
+- questions already clearly and fully answered by another user right above
+
+When in doubt, return ANSWER — the bot has a second safety filter.
 Do not answer the user. Do not explain. Output one word only."""
 
     user_prompt = (
@@ -1381,6 +1540,86 @@ def is_admin_author(message: discord.Message) -> bool:
 # ─────────────────────────────────────────────
 #  Single smart Claude call — filter + answer combined
 # ─────────────────────────────────────────────
+async def _verify_answer_grounded(question: str, answer: str, sources_text: str) -> tuple[bool, str]:
+    """
+    Independent source-grounding check (P0). A SEPARATE model call that sees ONLY the
+    sources and the proposed answer — never the answer-writing prompt — and decides
+    whether every specific claim is supported. This catches confident fabrications
+    that the model's own CONFIDENCE self-score lets through.
+
+    Fails OPEN (returns grounded=True) on any verifier error, so a verifier outage can
+    never silence a legitimate answer.
+    """
+    if not sources_text.strip():
+        # Nothing to verify against; the upstream prompt already returns NO_ANSWER
+        # when it has no sources, so don't second-guess it here.
+        return True, "no-sources-skip"
+    system = (
+        "You are a strict grounding verifier for a support bot. You are given SOURCES "
+        "and a proposed ANSWER. Decide whether EVERY specific, checkable claim in the "
+        "ANSWER is directly supported by the SOURCES.\n"
+        "Ignore greetings, tone, and formatting. A claim is UNGROUNDED if it states a "
+        "concrete fact (number, distance, rule, item, location, cause, fix, date, name) "
+        "that does not appear in the SOURCES.\n"
+        "Reply on ONE line: 'GROUNDED' if all claims are supported, otherwise "
+        "'UNGROUNDED: <short reason naming the unsupported claim>'."
+    )
+    user = f"SOURCES:\n{sources_text[:12000]}\n\n---\nANSWER:\n{answer[:2000]}"
+    try:
+        resp = await _claude_create(
+            model=AI_CHEAP_MODEL,
+            max_tokens=120,
+            temperature=0,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        )
+        verdict  = resp.content[0].text.strip()
+        grounded = verdict.upper().startswith("GROUNDED")
+        return grounded, verdict
+    except Exception as exc:
+        return True, f"verifier-error: {exc}"
+
+
+def _append_jsonl(path: str, record: dict) -> None:
+    """Append one JSON record as a line to `path`. Best-effort; never raises."""
+    try:
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        _log(f"Could not write log file {path}:  {exc}", "warn")
+
+
+def _log_suppressed_answer(channel_name: str, question: str, answer: str,
+                           verdict: str, enforced: bool) -> None:
+    """
+    Append an ungrounded answer to the suppression log. Each line is a KB gap: a
+    question the bot tried to answer without support — exactly what to backfill into
+    knowledge.txt and seed the golden-question set with.
+    """
+    _append_jsonl(SUPPRESSED_LOG_PATH, {
+        "ts":       datetime.now(timezone.utc).isoformat(),
+        "channel":  channel_name,
+        "question": (question or "")[:500],
+        "answer":   (answer or "")[:1000],
+        "verdict":  verdict[:300],
+        "enforced": enforced,
+    })
+
+
+def _log_flagged_answer(question: str, answer: str, downvotes: int, upvotes: int) -> None:
+    """
+    Append a community-flagged answer (reached the 👎 threshold) to the flagged log.
+    Like the suppression log, each line is a KB gap worth reviewing.
+    """
+    _append_jsonl(FLAGGED_LOG_PATH, {
+        "ts":        datetime.now(timezone.utc).isoformat(),
+        "question":  (question or "")[:500],
+        "answer":    (answer or "")[:1000],
+        "downvotes": downvotes,
+        "upvotes":   upvotes,
+    })
+
+
 async def evaluate_and_answer(
     message:            discord.Message,
     rich_context:       str,
@@ -1723,7 +1962,28 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
                 _log("Stayed silent — reply looked like a deflection", "skip")
                 return None
 
-        # Store confidence so it can be logged to DB / shown on the reply line
+        # ── Source-grounding gate (P0) ────────────────────────────────────────
+        # An independent verifier double-checks that the answer is supported by the
+        # sources — a real check instead of trusting the model's own CONFIDENCE.
+        # SHADOW mode (default) logs what it would suppress but changes nothing;
+        # GROUNDING_GATE_ENFORCE=1 actively suppresses. force=True (!cdn ask) bypasses.
+        sources_for_check = "\n".join(
+            s for s in (_structured_knowledge, _wipe_info, website_content, ref_content) if s
+        )
+        grounded, verdict = await _verify_answer_grounded(
+            message.content, answer, sources_for_check
+        )
+        if not grounded:
+            enforce = GROUNDING_GATE_ENFORCE and not force
+            _log_suppressed_answer(channel_name, message.content, answer, verdict, enforce)
+            if enforce:
+                _log(f"Grounding gate suppressed an ungrounded answer — {verdict[:120]}", "warn")
+                return None
+            _log(f"[shadow] Grounding gate would suppress — {verdict[:120]}", "skip")
+
+        # Store the grounding verdict + confidence so they can be logged to DB and,
+        # for grounding, used to decide whether this answer may be replayed later.
+        evaluate_and_answer._last_grounded   = int(grounded)
         evaluate_and_answer._last_confidence = confidence
         return answer
     except anthropic.APIError as exc:
@@ -1825,15 +2085,11 @@ def is_sidekick_trigger(message: discord.Message) -> bool:
     - Replies to a bot message
     - Starts with "CDN" (addressing the bot by name)
     """
-    # Primary check: match by user ID (cannot be faked or changed)
-    is_owner = (message.author.id == SIDEKICK_USER_ID and SIDEKICK_USER_ID != 0)
-    # Fallback: username match (used until SIDEKICK_USER_ID is set)
-    if not is_owner:
-        is_owner = (
-            message.author.name.lower() == SIDEKICK_USERNAME or
-            message.author.display_name.lower() == SIDEKICK_USERNAME
-        )
-    if not is_owner:
+    # Identity is verified ONLY by Discord user ID, which cannot be faked or changed.
+    # A username/display-name fallback was removed deliberately: display names (and,
+    # under Discord's new handle system, usernames) are user-settable, so matching on
+    # them let anyone impersonate the owner into the unguarded sidekick model.
+    if SIDEKICK_USER_ID == 0 or message.author.id != SIDEKICK_USER_ID:
         return False
 
     # Pings the bot directly
@@ -1957,12 +2213,54 @@ async def _update_check_loop():
         await asyncio.sleep(3600)  # re-check every hour
 
 
+async def _notify_owner(text: str) -> None:
+    """Best-effort DM to the bot owner. Never raises — alerting must not crash the bot."""
+    if SIDEKICK_USER_ID == 0:
+        return
+    try:
+        owner = bot.get_user(SIDEKICK_USER_ID) or await bot.fetch_user(SIDEKICK_USER_ID)
+        if owner:
+            await owner.send(text)
+    except Exception as exc:
+        _log(f"Could not DM owner alert:  {exc}", "warn")
+
+
+async def _kb_health_loop():
+    """
+    Runtime watchdog: the bot answers only from its knowledge base, so if the KB
+    ever empties (bad reload, failed crawl) it silently goes mute. Surface that
+    loudly and alert the owner once per empty streak instead of failing quietly.
+    """
+    await asyncio.sleep(KB_HEALTH_CHECK_INTERVAL)
+    already_alerted = False
+    while True:
+        if kb_fact_count() == 0:
+            _log("Knowledge base is EMPTY at runtime — bot is effectively mute until "
+                 "knowledge.txt or the crawl is fixed", "error")
+            if not already_alerted:
+                await _notify_owner(
+                    "⚠️ CDN_Captain has **0 knowledge-base facts** loaded right now and "
+                    "cannot answer anything. Check `knowledge.txt` or run `!cdn crawl`."
+                )
+                already_alerted = True
+        else:
+            already_alerted = False
+        await asyncio.sleep(KB_HEALTH_CHECK_INTERVAL)
+
+
 async def _send_answer(message: discord.Message, answer: str) -> discord.Message:
     """Send a reply with rate-limit retry. Appends branding footer and update notice."""
     footer = f"\n-# Engineered by [Morningstar.0](<{PORTFOLIO_URL}>)"
     if _update_available:
         footer += f"\n-# ⬆️ [Bot update available](<{GITHUB_RELEASES_URL}>)"
     sent = await _send_with_retry(lambda: message.reply(answer + footer, mention_author=True))
+    # Seed feedback reactions so anyone can flag a good/bad answer (best-effort —
+    # never let a reaction failure affect the reply itself).
+    for _emoji in (FEEDBACK_UP_EMOJI, FEEDBACK_DOWN_EMOJI):
+        try:
+            await sent.add_reaction(_emoji)
+        except discord.HTTPException:
+            pass
     conf = getattr(evaluate_and_answer, "_last_confidence", None)
     conf_tag = f"  ·  confidence {conf}/10" if isinstance(conf, int) else ""
     _log(f"Replied  ({len(answer.split())} words){conf_tag}", "ok")
@@ -1975,16 +2273,18 @@ async def _send_answer(message: discord.Message, answer: str) -> discord.Message
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     """
-    Admin feedback system: react ✅ or ❌ to any CDN_Captain reply to mark it.
-    ❌ = wrong answer (logged + bot deletes its reply to clean up)
-    ✅ = correct answer (logged as confirmed good)
-    Only processed when a protected admin adds the reaction.
+    Feedback on CDN_Captain replies via reactions:
+      • 👍 / 👎  — anyone can signal a good/bad answer. Votes are recorded once per
+                   user; enough 👎 flags the answer for review and pings the owner.
+                   Community votes NEVER delete an answer (troll-safe).
+      • ✅ / ❌  — protected admins only: authoritative mark. ❌ also deletes the reply.
     """
-    # Only care about ✅ and ❌
-    if str(payload.emoji) not in ("✅", "❌"):
+    emoji = str(payload.emoji)
+
+    # Ignore the bot's own seeded reactions
+    if bot.user and payload.user_id == bot.user.id:
         return
 
-    # Fetch the guild member who reacted
     guild = bot.get_guild(payload.guild_id)
     if not guild:
         return
@@ -1992,7 +2292,30 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     if not member or member.bot:
         return
 
-    # Only admins can give feedback
+    # ── Community feedback (👍 / 👎) — signal only, never deletes ──
+    if emoji in (FEEDBACK_UP_EMOJI, FEEDBACK_DOWN_EMOJI):
+        rec = await db_get_by_message_id(payload.message_id)
+        if rec is None:
+            return  # not one of our logged answers
+        vote = 1 if emoji == FEEDBACK_UP_EMOJI else -1
+        up, down = await db_record_feedback_vote(payload.message_id, payload.user_id, vote)
+        if vote < 0:
+            _log(f"Answer downvoted  ({down}👎 / {up}👍)  by {member.display_name}  —  \"{rec['question'][:60]}\"", "warn")
+            # Alert exactly once, when the threshold is first reached
+            if down == FEEDBACK_DOWNVOTE_ALERT_THRESHOLD:
+                _log_flagged_answer(rec["question"], rec["answer"], down, up)
+                await _notify_owner(
+                    f"⚠️ A CDN_Captain answer reached {down} 👎 and may be wrong:\n"
+                    f"Q: {rec['question'][:200]}\n"
+                    f"Review it and update `knowledge.txt` if needed."
+                )
+        return
+
+    # ── Admin authoritative mark (✅ / ❌) ──
+    if emoji not in ("✅", "❌"):
+        return
+
+    # Only admins can give authoritative feedback
     is_admin = (
         member.name.lower() in PROTECTED_ADMINS
         or member.display_name.lower() in PROTECTED_ADMINS
@@ -2024,6 +2347,45 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
             pass
 
 
+async def load_knowledge_file() -> bool:
+    """
+    Load a static knowledge.txt file as the bot's entire knowledge base.
+    Skips the Playwright crawl, Claude extraction, and daily re-crawl entirely.
+    Returns True if the file was loaded, False if it doesn't exist.
+    """
+    global _structured_knowledge, _page_store, _using_knowledge_file
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), KNOWLEDGE_FILE)
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read()
+        # Honor the file's documented contract: lines starting with '#' are comments
+        # and are ignored, as are blank lines. Only real facts feed the knowledge base.
+        facts = [
+            line.rstrip()
+            for line in raw.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        content = "\n".join(facts).strip()
+        # A file containing only comments/blank lines has zero facts. Treat it as
+        # empty and fall back to the live crawl, rather than running blind on nothing
+        # (which is what let the bot invent unsourced answers).
+        if not content:
+            _log(f"Knowledge file has no facts (only comments/blank lines): {KNOWLEDGE_FILE} — falling back to crawl", "warn")
+            return False
+        _structured_knowledge = content
+        # Also expose the file as a single "page" so TF-IDF scoring still works
+        _page_store = {f"file://{KNOWLEDGE_FILE}": content}
+        _using_knowledge_file = True
+        await db_set_state("structured_knowledge", content)
+        _log(f"Knowledge file loaded  —  {len(facts)} facts from {KNOWLEDGE_FILE}  (crawl skipped)", "ok")
+        return True
+    except Exception as exc:
+        _log(f"Could not load knowledge file: {exc}", "warn")
+        return False
+
+
 @bot.event
 async def on_ready():
     _print_banner()
@@ -2046,16 +2408,40 @@ async def on_ready():
     if cached_wi:
         _wipe_info = cached_wi
         _log("Loaded cached wipe schedule from the last run", "ok")
-    bot.loop.create_task(_auto_crawl_loop())
     bot.loop.create_task(_update_check_loop())
-    _log("Step 2/5 — reading cdndayz.com (this takes a few seconds)", "info")
-    await crawl_site(None)
-    _log("Step 3/5 — extracting rules, facts and server info", "info")
-    await extract_structured_knowledge()
-    _log("Step 4/5 — working out the wipe schedule", "info")
-    await parse_wipe_schedule()
+    # ── Knowledge source: file or live crawl ──────────────────────────────────
+    if await load_knowledge_file():
+        # Static file mode — no crawl, no extraction, no Playwright needed.
+        # Steps 2-4 are skipped entirely. Just read the reference channel.
+        _log("Step 2/5 — knowledge file mode (crawl skipped)", "info")
+        _log("Step 3/5 — knowledge file mode (extraction skipped)", "info")
+        _log("Step 4/5 — knowledge file mode (wipe parse skipped)", "info")
+    else:
+        # Live crawl mode — original behaviour.
+        bot.loop.create_task(_auto_crawl_loop())
+        _log("Step 2/5 — reading cdndayz.com (this takes a few seconds)", "info")
+        await crawl_site(None)
+        _log("Step 3/5 — extracting rules, facts and server info", "info")
+        await extract_structured_knowledge()
+        _log("Step 4/5 — working out the wipe schedule", "info")
+        await parse_wipe_schedule()
     _log("Step 5/5 — reading the reference channel", "info")
     await fetch_reference_channel()
+
+    # ── Knowledge-base health signal ──────────────────────────────────────────
+    # An empty KB means the bot stays silent on everything, which is exactly the
+    # failure that previously went unnoticed. Surface it loudly and alert the owner.
+    if kb_fact_count() == 0:
+        _log("KNOWLEDGE BASE IS EMPTY — 0 facts loaded. The bot cannot answer anything "
+             "until knowledge.txt or the crawl is fixed.", "error")
+        await _notify_owner(
+            "⚠️ CDN_Captain started with **0 knowledge-base facts** and cannot answer "
+            "anything. Check `knowledge.txt` or run `!cdn crawl`."
+        )
+    else:
+        _log(f"Knowledge base ready — {kb_health_line()}", "ok")
+    bot.loop.create_task(_kb_health_loop())
+
     guild_name = bot.guilds[0].name if bot.guilds else "Unknown Server"
     _print_ready(guild_name)
 
@@ -2211,8 +2597,12 @@ async def on_message(message: discord.Message):
     if message.reference and message.reference.resolved:
         ref = message.reference.resolved
         if isinstance(ref, discord.Message) and ref.author == bot.user:
-            # This is a reply to the bot — look up the original Q&A from DB
+            # This is a reply to the bot — look up the original Q&A from DB.
+            # Only replay it as authoritative context if it was grounded and not
+            # marked wrong; otherwise don't let a bad answer seed the follow-up.
             prior_bot_answer = await db_get_by_message_id(ref.id)
+            if not _is_replayable(prior_bot_answer):
+                prior_bot_answer = None
 
     # Load knowledge sources
     ref_content = await fetch_reference_channel()
@@ -2248,7 +2638,8 @@ async def on_message(message: discord.Message):
 
     try:
         sent = await _send_answer(message, answer)
-        last_conf = getattr(evaluate_and_answer, "_last_confidence", None)
+        last_conf     = getattr(evaluate_and_answer, "_last_confidence", None)
+        last_grounded = getattr(evaluate_and_answer, "_last_grounded", None)
         row_id = await db_log_answer(
             guild_id     = message.guild.id if message.guild else None,
             channel_id   = message.channel.id,
@@ -2259,6 +2650,7 @@ async def on_message(message: discord.Message):
             answer       = answer,
             confidence   = last_conf,
             message_id   = sent.id,
+            grounded     = last_grounded,
         )
         # Record id stored quietly — no log line needed; the "Replied" line above
         # already confirms success to the operator.
@@ -2398,12 +2790,16 @@ async def cdn_ping(ctx: commands.Context):
     else:
         uptime_str = f"{uptime_sec // 3600}h {(uptime_sec % 3600) // 60}m"
 
-    # Crawl age
-    crawl_age = int(time.time() - _crawl_done_time) if _crawl_done_time else None
-    crawl_str = (
-        f"{crawl_age // 60}m ago · {len(_page_store)} pages"
-        if crawl_age is not None else "⚠️ Not crawled"
-    )
+    # Crawl age (in static-file mode the crawler is intentionally unused, so don't
+    # mislabel that as a broken crawl)
+    if _using_knowledge_file:
+        crawl_str = "n/a — static knowledge-file mode"
+    else:
+        crawl_age = int(time.time() - _crawl_done_time) if _crawl_done_time else None
+        crawl_str = (
+            f"{crawl_age // 60}m ago · {len(_page_store)} pages"
+            if crawl_age is not None else "⚠️ Not crawled"
+        )
 
     # DB size
     db_size = "N/A"
@@ -2425,8 +2821,10 @@ async def cdn_ping(ctx: commands.Context):
     except ImportError:
         mem_str = "install psutil for memory stats"
 
-    # Structured knowledge
-    sk_lines = len(_structured_knowledge.splitlines()) if _structured_knowledge else 0
+    # Knowledge-base health — an empty KB means the bot answers nothing
+    facts    = kb_fact_count()
+    kb_ok    = facts > 0
+    facts_str = f"{facts} facts · {kb_source_label()}" if kb_ok else "⚠️ 0 facts — bot is MUTE"
 
     # Anthropic API health
     if _ai_api_issue_kind:
@@ -2438,13 +2836,16 @@ async def cdn_ping(ctx: commands.Context):
     else:
         api_health = "ℹ️ No Anthropic request yet"
 
-    embed = discord.Embed(title="🏓  CDN_Captain Health", color=discord.Color.green())
+    embed = discord.Embed(
+        title="🏓  CDN_Captain Health",
+        color=discord.Color.green() if kb_ok else discord.Color.red(),
+    )
     embed.add_field(name="Latency",          value=f"{latency_ms}ms",  inline=True)
     embed.add_field(name="Uptime",           value=uptime_str,          inline=True)
     embed.add_field(name="Memory",           value=mem_str,             inline=True)
     embed.add_field(name="Website Crawl",    value=crawl_str,           inline=False)
     embed.add_field(name="AI API",           value=api_health,          inline=False)
-    embed.add_field(name="Structured Facts", value=f"{sk_lines} facts extracted", inline=True)
+    embed.add_field(name="Knowledge Base",   value=facts_str,           inline=True)
     embed.add_field(name="DB",               value=f"{db_answers} answers · {db_size}", inline=True)
     embed.add_field(name="Wipe Info",        value=_wipe_info[:80] + "..." if len(_wipe_info) > 80 else (_wipe_info or "⚠️ Not parsed"), inline=False)
     embed.set_footer(text=f"Python {sys.version.split()[0]} · main {AI_MAIN_MODEL} · cheap {AI_CHEAP_MODEL}")
@@ -2534,9 +2935,28 @@ async def _get_ctx_for_command(ctx: commands.Context) -> str:
 # ─────────────────────────────────────────────
 #  Entry point
 # ─────────────────────────────────────────────
-if __name__ == "__main__":
+def _validate_config() -> list[str]:
+    """Validate required configuration at startup. Returns a list of problem strings."""
+    problems: list[str] = []
     if not DISCORD_TOKEN:
-        raise RuntimeError("DISCORD_TOKEN is not set in .env")
+        problems.append("DISCORD_TOKEN is not set — add it to your .env file")
     if not ANTHROPIC_API_KEY:
-        raise RuntimeError("ANTHROPIC_API_KEY is not set in .env")
+        problems.append("ANTHROPIC_API_KEY is not set — add it to your .env file")
+    if not isinstance(SIDEKICK_USER_ID, int) or SIDEKICK_USER_ID < 0:
+        problems.append("SIDEKICK_USER_ID must be a non-negative integer Discord user ID")
+    if not AI_MAIN_MODEL or not AI_CHEAP_MODEL:
+        problems.append("ANTHROPIC_MAIN_MODEL / ANTHROPIC_CHEAP_MODEL must not be empty")
+    if FEEDBACK_DOWNVOTE_ALERT_THRESHOLD < 1:
+        problems.append("FEEDBACK_DOWNVOTE_ALERT_THRESHOLD must be >= 1")
+    return problems
+
+
+if __name__ == "__main__":
+    # Fail fast with a clear message instead of crashing deep in startup later.
+    _config_problems = _validate_config()
+    if _config_problems:
+        _log("Cannot start — fix these configuration problems:", "error")
+        for _problem in _config_problems:
+            _log(f"    • {_problem}", "error")
+        sys.exit(1)
     bot.run(DISCORD_TOKEN)
