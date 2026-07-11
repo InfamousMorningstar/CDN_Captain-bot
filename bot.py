@@ -1901,24 +1901,36 @@ If your confidence is below 6, treat it the same as {NO_ANSWER} — return {NO_A
         raw    = resp.content[0].text.strip()
         label  = f"screenshot×{n_images}" if has_images else message.content[:70]
 
-        # Silent check
-        if raw.upper().startswith(NO_ANSWER):
+        # ── Normalize the model output, then detect silence ──────────────────
+        # The model is supposed to return EITHER a bare NO_ANSWER sentinel (stay
+        # silent) OR a "CONFIDENCE:X\n<answer>" header. It occasionally emits an
+        # off-spec hybrid such as "CONFIDENCE:NO_ANSWER\nNO_ANSWER", which the old
+        # two-shape parser matched against neither pattern — so the sentinel text
+        # leaked straight to Discord. Strip any leading CONFIDENCE: line first
+        # (numeric OR not), then collapse every "I have nothing" shape to silence.
+        confidence: int | None = None
+        answer     = raw
+        header     = ""
+        conf_match = re.match(r"^\s*CONFIDENCE:\s*([^\n]*)\n?(.*)", raw,
+                              re.DOTALL | re.IGNORECASE)
+        if conf_match:
+            header = conf_match.group(1).strip()
+            answer = conf_match.group(2).strip()
+            digits = re.match(r"\d+", header)
+            if digits:
+                confidence = int(digits.group())
+
+        # Silence detection — catches: bare NO_ANSWER · CONFIDENCE:NO_ANSWER ·
+        # CONFIDENCE:3\nNO_ANSWER · empty body after stripping the header.
+        if (not answer
+                or answer.upper().startswith(NO_ANSWER)
+                or header.upper().startswith(NO_ANSWER)):
             _log("Stayed silent — no sourced answer", "skip")
             return None
 
-        # Parse optional CONFIDENCE:X header
-        confidence: int | None = None
-        answer = raw
-        conf_match = re.match(r"^CONFIDENCE:(\d+)\s*\n?(.*)", raw, re.DOTALL | re.IGNORECASE)
-        if conf_match:
-            confidence = int(conf_match.group(1))
-            answer     = conf_match.group(2).strip()
-            if confidence < 6 and not force:
-                _log(f"Stayed silent — confidence too low ({confidence}/10)", "skip")
-                return None
-
-        # Re-check after stripping confidence header
-        if not answer or answer.upper().startswith(NO_ANSWER):
+        # Low-confidence gate (only when the model gave a real numeric score).
+        if confidence is not None and confidence < 6 and not force:
+            _log(f"Stayed silent — confidence too low ({confidence}/10)", "skip")
             return None
 
         # Hard post-processing filter: catch deflection/non-answers that slipped past
