@@ -51,3 +51,23 @@ def test_page_hash_diff_and_retire(tmp_path):
         sources = {f.source for f in k.facts()}
         assert sources == {"https://x.com/a", "ref-channel"}
     asyncio.run(run())
+
+
+def test_manual_facts_survive_missing_file(tmp_path):
+    import knowledge as k
+    dbp = str(tmp_path / "facts.db")
+    kf = tmp_path / "knowledge.txt"
+    kf.write_text("RULE: keep me\n", encoding="utf-8")
+
+    async def run():
+        await k.init_facts_db(dbp)
+        assert await k.load_manual_facts(db_path=dbp, knowledge_file=str(kf)) == 1
+        # File vanishes (mid-rewrite): manual facts must survive
+        kf.unlink()
+        assert await k.load_manual_facts(db_path=dbp, knowledge_file=str(kf)) == -1
+        assert await k.reload_facts(db_path=dbp) == 1
+        # File exists but empty: owner intent — clears manual facts
+        kf.write_text("# only a comment\n", encoding="utf-8")
+        assert await k.load_manual_facts(db_path=dbp, knowledge_file=str(kf)) == 0
+        assert await k.reload_facts(db_path=dbp) == 0
+    asyncio.run(run())

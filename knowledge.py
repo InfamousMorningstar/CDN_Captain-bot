@@ -70,13 +70,21 @@ async def load_manual_facts(db_path: str | None = None,
                             knowledge_file: str | None = None) -> int:
     """(Re)load knowledge.txt as manual facts. Replaces all previous manual facts."""
     path = knowledge_file or config.KNOWLEDGE_FILE
+
+    # If file doesn't exist: log warning and return -1 WITHOUT touching database
+    if not os.path.exists(path):
+        log(f"Knowledge file missing: {path} — keeping existing manual facts", "warn")
+        return -1
+
+    # File exists: parse it
     parsed: list[tuple[str, str]] = []
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                p = parse_fact_line(line)
-                if p:
-                    parsed.append(p)
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            p = parse_fact_line(line)
+            if p:
+                parsed.append(p)
+
+    # Delete and reinsert
     now = time.time()
     async with aiosqlite.connect(_path(db_path)) as db:
         await db.execute("DELETE FROM facts WHERE manual = 1")
@@ -87,7 +95,13 @@ async def load_manual_facts(db_path: str | None = None,
                 (tag, text, "knowledge.txt", now, now),
             )
         await db.commit()
-    log(f"Manual facts loaded — {len(parsed)} from {path}", "ok")
+
+    # Log at "ok" level if facts found, "warn" level if file was empty
+    if parsed:
+        log(f"Manual facts loaded — {len(parsed)} from {path}", "ok")
+    else:
+        log(f"Knowledge file has no facts: {path} — manual facts cleared", "warn")
+
     return len(parsed)
 
 
