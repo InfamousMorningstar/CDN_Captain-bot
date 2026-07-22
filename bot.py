@@ -329,6 +329,11 @@ async def on_message(message: discord.Message):
 
     await bot.process_commands(message)
 
+    # Command messages end here — never fall through into the answering pipeline
+    # (otherwise "!cdn ask ..." would trigger a second, duplicate answer).
+    if message.content.lstrip().startswith("!cdn"):
+        return
+
     if mentions_admin(message) and not is_admin_author(message):
         try:
             await message.reply(build_admin_tag_response(message), mention_author=True)
@@ -462,7 +467,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     guild = bot.get_guild(payload.guild_id) if payload.guild_id else None
     if not guild:
         return
-    member = guild.get_member(payload.user_id)
+    member = payload.member or guild.get_member(payload.user_id)
     if not member or member.bot:
         return
 
