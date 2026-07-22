@@ -42,6 +42,8 @@ Content:
 
 _CHUNK_CHARS = 24000   # per extraction call; pages larger than this are chunked
 
+_ingest_lock = asyncio.Lock()
+
 
 def page_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -206,32 +208,50 @@ async def fetch_reference_text(bot) -> str:
 async def run_ingest(client, bot=None, db_path: str | None = None) -> str:
     """Full ingest: crawl -> diff hashes -> extract changed pages only -> retire gone
     pages -> ingest reference channel -> reload the fact cache. Returns a summary."""
-    pages = await crawl_site()
-    old_hashes = await knowledge.get_page_hashes(db_path=db_path)
-    changed = unchanged = 0
-    for url, text in pages.items():
-        h = page_hash(text)
-        if old_hashes.get(url) == h:
-            await knowledge.touch_page(url, db_path=db_path)
-            unchanged += 1
-            continue
-        extracted = await extract_facts_from_text(client, url, text)
-        await knowledge.replace_page_facts(url, h, extracted, db_path=db_path)
-        changed += 1
-    retired = 0
-    if pages:  # a failed/empty crawl must never wipe the KB
-        retired = await knowledge.retire_pages(set(pages.keys()), db_path=db_path)
+    async with _ingest_lock:
+        pages = await crawl_site()
+        old_hashes = await knowledge.get_page_hashes(db_path=db_path)
+        changed = unchanged = 0
+        for url, text in pages.items():
+            h = page_hash(text)
+            if old_hashes.get(url) == h:
+                await knowledge.touch_page(url, db_path=db_path)
+                unchanged += 1
+                continue
+            extracted = await extract_facts_from_text(client, url, text)
+            if not extracted and url in old_hashes:
+                # This page previously produced facts; a zero-fact extraction here is
+                # far more likely a transient model/parsing failure than the page going
+                # empty. Keep the existing facts and hash so the next ingest retries.
+                log(f"Extraction produced 0 facts for {url} — keeping existing facts, "
+                    f"will retry next ingest", "warn")
+                continue
+            await knowledge.replace_page_facts(url, h, extracted, db_path=db_path)
+            changed += 1
 
-    ref_text = await fetch_reference_text(bot)
-    if ref_text and old_hashes.get("ref-channel") != page_hash(ref_text):
-        extracted = await extract_facts_from_text(client, "ref-channel", ref_text)
-        await knowledge.replace_page_facts("ref-channel", page_hash(ref_text), extracted, db_path=db_path)
+        retired = 0
+        known = {u for u in old_hashes if u.startswith("http")}
+        if pages and (not known or len(pages) >= 0.8 * len(known)):
+            retired = await knowledge.retire_pages(set(pages.keys()), db_path=db_path)
+        elif pages:
+            log(f"Skipped retirement — crawl only found {len(pages)}/{len(known)} known "
+                f"pages, looks unhealthy", "warn")
 
-    total = await knowledge.reload_facts(db_path=db_path)
-    summary = (f"Ingest done — {changed} page(s) re-extracted, {unchanged} unchanged, "
-               f"{retired} retired, {total} facts loaded")
-    log(summary, "ok")
-    return summary
+        ref_text = await fetch_reference_text(bot)
+        if ref_text and old_hashes.get("ref-channel") != page_hash(ref_text):
+            extracted = await extract_facts_from_text(client, "ref-channel", ref_text)
+            if not extracted and "ref-channel" in old_hashes:
+                log("Extraction produced 0 facts for ref-channel — keeping existing facts, "
+                    "will retry next ingest", "warn")
+            else:
+                await knowledge.replace_page_facts("ref-channel", page_hash(ref_text), extracted,
+                                                    db_path=db_path)
+
+        total = await knowledge.reload_facts(db_path=db_path)
+        summary = (f"Ingest done — {changed} page(s) re-extracted, {unchanged} unchanged, "
+                   f"{retired} retired, {total} facts loaded")
+        log(summary, "ok")
+        return summary
 
 
 async def ingest_loop(client, bot) -> None:

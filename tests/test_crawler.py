@@ -74,3 +74,32 @@ def test_extract_facts_survives_empty_response():
     client = SimpleNamespace(messages=EmptyMessages())
     got = asyncio.run(extract_facts_from_text(client, "https://x.com/a", "text"))
     assert got == []
+
+
+def test_failed_extraction_keeps_existing_facts(tmp_path, monkeypatch):
+    import crawler, knowledge as k
+    dbp = str(tmp_path / "facts.db")
+
+    async def crawl_v1():
+        return {"https://x.com/a": "content A"}
+    monkeypatch.setattr(crawler, "crawl_site", crawl_v1)
+
+    async def run():
+        await k.init_facts_db(dbp)
+        await crawler.run_ingest(FakeClient(["RULE: original fact"]), bot=None, db_path=dbp)
+        assert len(k.facts()) == 0 or await k.reload_facts(db_path=dbp) == 1
+        # Page content changes but extraction fails (empty response)
+        async def crawl_v2():
+            return {"https://x.com/a": "content A changed"}
+        monkeypatch.setattr(crawler, "crawl_site", crawl_v2)
+
+        class EmptyMessages:
+            async def create(self, **kw):
+                return SimpleNamespace(content=[])
+        await crawler.run_ingest(SimpleNamespace(messages=EmptyMessages()), bot=None, db_path=dbp)
+        assert await k.reload_facts(db_path=dbp) == 1   # original fact survived
+        # And the hash was NOT updated: a working client now re-extracts
+        c3 = FakeClient(["RULE: replacement fact"])
+        await crawler.run_ingest(c3, bot=None, db_path=dbp)
+        assert len(c3.messages.calls) == 1
+    asyncio.run(run())
