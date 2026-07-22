@@ -62,3 +62,15 @@ def test_run_ingest_only_extracts_changed_pages(tmp_path, monkeypatch):
         await crawler.run_ingest(c3, bot=None, db_path=dbp)
         assert len(c3.messages.calls) == 1
     asyncio.run(run())
+
+
+def test_extract_facts_survives_empty_response():
+    from crawler import extract_facts_from_text
+
+    class EmptyMessages:
+        async def create(self, **kw):
+            return SimpleNamespace(content=[])
+
+    client = SimpleNamespace(messages=EmptyMessages())
+    got = asyncio.run(extract_facts_from_text(client, "https://x.com/a", "text"))
+    assert got == []

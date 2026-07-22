@@ -59,10 +59,11 @@ async def extract_facts_from_text(client, source: str, text: str) -> list[tuple[
                 max_tokens=8192,
                 messages=[{"role": "user", "content": _EXTRACTION_PROMPT + f"[{source}]\n{chunk}"}],
             )
+            lines = resp.content[0].text.splitlines() if resp.content else []
         except Exception as exc:
             log(f"Extraction failed for {source}: {exc}", "warn")
             continue
-        for line in resp.content[0].text.splitlines():
+        for line in lines:
             parsed = knowledge.parse_fact_line(line)
             if parsed and line.strip() not in seen:
                 seen.add(line.strip())
