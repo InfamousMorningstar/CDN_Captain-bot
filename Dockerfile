@@ -2,22 +2,25 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# System deps required by Playwright's Chromium
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python deps first (cached layer unless requirements.txt changes)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Chromium and its system dependencies via Playwright
+# Chromium + system deps for the weekly Playwright crawl
 RUN playwright install --with-deps chromium
 
-# Source is bind-mounted at runtime — no COPY needed for bot files.
-# This keeps the image lean and lets the watchdog's self-updater
-# write new bot.py / watchdog.py directly to the mounted directory.
+COPY config.py logging_util.py db.py knowledge.py retrieval.py answering.py crawler.py bot.py knowledge.txt ./
 
 ENV PYTHONUNBUFFERED=1
 
-CMD ["python", "watchdog.py"]
+# facts.db / memory.db / *.jsonl live in /data (mount a volume there)
+ENV FACTS_DB_PATH=/data/facts.db \
+    MEMORY_DB_PATH=/data/memory.db \
+    SUPPRESSED_LOG_PATH=/data/suppressed_answers.jsonl \
+    FLAGGED_LOG_PATH=/data/flagged_answers.jsonl
+VOLUME /data
+
+CMD ["python", "bot.py"]
