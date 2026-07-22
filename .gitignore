@@ -34,3 +34,4 @@ launcher_build.py
 .DS_Store
 Thumbs.db
 desktop.ini
+.superpowers/
