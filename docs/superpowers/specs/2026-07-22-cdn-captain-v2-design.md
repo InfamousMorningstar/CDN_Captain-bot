@@ -181,7 +181,16 @@ than on caching. If the fact DB grows enough that retrieved context regularly ex
 - `knowledge.txt` ships as-is and continues to work with zero crawl (manual facts only)
   if the site is ever unreachable.
 
-## 9. Out of scope
+## 9. Accepted deviations (recorded post-implementation)
+
+- `!cdn ping` was merged into `!cdn status` (one health command instead of two).
+- `!cdn ask` runs the full gated pipeline — there is no force-bypass of the citation/
+  grounding gates. Safer than the spec's original "force" behavior; kept deliberately.
+- The grounding verifier is skipped only for IMG-only citations; mixed citations
+  (`FACTS: [4, IMG]`) are verified against the numbered facts.
+- Admin-tag protection still replies while the bot is paused (matches v1 behavior).
+
+## 10. Out of scope
 
 - Embedding-based retrieval (BM25 + expansions is enough at this KB size; revisit if
   the fact count grows past a few thousand).
