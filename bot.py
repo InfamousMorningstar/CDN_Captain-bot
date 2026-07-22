@@ -21,7 +21,7 @@ import crawler
 import db
 import knowledge
 import retrieval
-from logging_util import log
+from logging_util import log, redact
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -33,6 +33,7 @@ client = anthropic.AsyncAnthropic(api_key=config.ANTHROPIC_API_KEY)
 
 _bot_paused = False
 _bot_start_time = time.time()
+_started = False
 user_last_answered: dict[int, float] = defaultdict(float)
 
 PAUSE_PHRASES = {"shutdown", "stop responding", "go silent", "pause", "don't respond",
@@ -62,6 +63,18 @@ EXT_TO_MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg"
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def _footer() -> str:
     return f"\n-# Engineered by [Morningstar.0](<{config.PORTFOLIO_URL}>)"
+
+
+def _truncate_for_discord(answer_text: str, suffix: str = "") -> str:
+    """Discord hard-caps messages at 2000 chars. Truncate the answer body (never
+    the suffix) so replies never get silently dropped by discord.py."""
+    if len(answer_text) + len(suffix) > 2000:
+        answer_text = answer_text[: 2000 - len(suffix) - 2] + "…"
+    return answer_text + suffix
+
+
+def _build_reply_text(answer_text: str) -> str:
+    return _truncate_for_discord(answer_text, _footer())
 
 
 def build_admin_tag_response(message: discord.Message) -> str:
@@ -176,6 +189,9 @@ async def download_image_blocks(attachments: list) -> list[dict]:
     blocks = []
     async with aiohttp.ClientSession() as session:
         for att in attachments:
+            if getattr(att, "size", 0) > 5 * 1024 * 1024:
+                log(f"Skipping screenshot over 5MB: {att.filename}", "warn")
+                continue
             try:
                 async with session.get(att.url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                     if resp.status != 200:
@@ -269,9 +285,12 @@ async def sidekick_answer(message: discord.Message, context: str) -> str | None:
 # ── Events ───────────────────────────────────────────────────────────────────
 @bot.event
 async def on_ready():
-    global _bot_paused
+    global _bot_paused, _started
     print()
     log(f"CDN_Captain {config.CURRENT_VERSION} — logged in as {bot.user}", "ok")
+    if _started:
+        return
+    _started = True
     await db.init_db()
     await knowledge.init_facts_db()
     _bot_paused = await db.get_paused()
@@ -350,15 +369,15 @@ async def on_message(message: discord.Message):
     # Sidekick / pause control
     if is_sidekick_trigger(message):
         low = content.lower()
-        if any(p in low for p in PAUSE_PHRASES):
-            _bot_paused = True
-            await db.set_paused(True)
-            await message.reply("Going quiet now. Ping me when you want me back.", mention_author=True)
-            return
         if any(p in low for p in RESUME_PHRASES):
             _bot_paused = False
             await db.set_paused(False)
             await message.reply("Back on watch.", mention_author=True)
+            return
+        if any(p in low for p in PAUSE_PHRASES):
+            _bot_paused = True
+            await db.set_paused(True)
+            await message.reply("Going quiet now. Ping me when you want me back.", mention_author=True)
             return
         ctx = await _channel_context(message)
         ans = await sidekick_answer(message, ctx)
@@ -409,6 +428,7 @@ async def on_message(message: discord.Message):
             if db.is_replayable(candidate):
                 prior = candidate
 
+    user_last_answered[message.author.id] = time.time()
     answer = await answering.generate_answer(
         client,
         question=content,
@@ -421,9 +441,8 @@ async def on_message(message: discord.Message):
     if answer is None:
         return
 
-    user_last_answered[message.author.id] = time.time()
     try:
-        sent = await send_with_retry(lambda: message.reply(answer.text + _footer(), mention_author=True))
+        sent = await send_with_retry(lambda: message.reply(_build_reply_text(answer.text), mention_author=True))
         for emoji in (config.FEEDBACK_UP_EMOJI, config.FEEDBACK_DOWN_EMOJI):
             try:
                 await sent.add_reaction(emoji)
@@ -502,7 +521,7 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
     log(f"Answer {'confirmed' if emoji == '✅' else 'marked wrong'} by {member.display_name}", "ok")
     if emoji == "❌":
         try:
-            channel = guild.get_channel(payload.channel_id)
+            channel = bot.get_channel(payload.channel_id)
             if channel:
                 msg = await channel.fetch_message(payload.message_id)
                 await msg.delete()
@@ -549,7 +568,8 @@ async def cdn_ask(ctx, *, question: str):
     ans = await answering.generate_answer(
         client, question=question, facts=retrieved,
         context="(direct command)", channel_name=getattr(ctx.channel, "name", "unknown"))
-    await ctx.reply(ans.text if ans else "My facts don't fully answer that.", mention_author=True)
+    reply_text = _truncate_for_discord(ans.text) if ans else "My facts don't fully answer that."
+    await ctx.reply(reply_text, mention_author=True)
 
 
 @bot.command(name="facts")
@@ -574,7 +594,7 @@ async def cdn_crawl(ctx):
         summary = await crawler.run_ingest(client, bot)
         await msg.edit(content=f"✅ {summary}")
     except Exception as exc:
-        await msg.edit(content=f"❌ Ingest failed: {exc}")
+        await msg.edit(content=f"❌ Ingest failed: {redact(str(exc))}")
 
 
 @bot.command(name="status")
