@@ -226,12 +226,16 @@ async def run_ingest(client, bot=None, db_path: str | None = None) -> str:
                 log(f"Extraction produced 0 facts for {url} — keeping existing facts, "
                     f"will retry next ingest", "warn")
                 continue
+            if not extracted and url not in old_hashes:
+                # New page with zero-fact extraction; don't record a hash so it retries.
+                log(f"Extraction produced 0 facts for new page {url} — will retry next ingest", "warn")
+                continue
             await knowledge.replace_page_facts(url, h, extracted, db_path=db_path)
             changed += 1
 
         retired = 0
         known = {u for u in old_hashes if u.startswith("http")}
-        if pages and (not known or len(pages) >= 0.8 * len(known)):
+        if pages and (not known or len(set(pages) & known) >= 0.8 * len(known)):
             retired = await knowledge.retire_pages(set(pages.keys()), db_path=db_path)
         elif pages:
             log(f"Skipped retirement — crawl only found {len(pages)}/{len(known)} known "

@@ -382,7 +382,7 @@ async def on_message(message: discord.Message):
         ctx = await _channel_context(message)
         ans = await sidekick_answer(message, ctx)
         if ans:
-            await send_with_retry(lambda: message.reply(ans, mention_author=True))
+            await send_with_retry(lambda: message.reply(_truncate_for_discord(ans, ""), mention_author=True))
         return
 
     if _bot_paused:

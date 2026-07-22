@@ -87,7 +87,7 @@ def test_failed_extraction_keeps_existing_facts(tmp_path, monkeypatch):
     async def run():
         await k.init_facts_db(dbp)
         await crawler.run_ingest(FakeClient(["RULE: original fact"]), bot=None, db_path=dbp)
-        assert len(k.facts()) == 0 or await k.reload_facts(db_path=dbp) == 1
+        assert await k.reload_facts(db_path=dbp) == 1
         # Page content changes but extraction fails (empty response)
         async def crawl_v2():
             return {"https://x.com/a": "content A changed"}
