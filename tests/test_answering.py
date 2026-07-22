@@ -116,3 +116,16 @@ def test_verifier_fails_open_on_error():
     client = SimpleNamespace(messages=BoomMessages())
     grounded, verdict = asyncio.run(answering.verify_grounded(client, "facts", "answer"))
     assert grounded is True and "verifier-error" in verdict
+
+
+def test_generate_answer_empty_response_is_silent():
+    import answering
+
+    class EmptyMessages:
+        async def create(self, **kw):
+            return SimpleNamespace(content=[])
+
+    client = SimpleNamespace(messages=EmptyMessages())
+    ans = asyncio.run(answering.generate_answer(
+        client, question="q?", facts=FACTS, context="(none)"))
+    assert ans is None

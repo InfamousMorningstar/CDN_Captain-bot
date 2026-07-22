@@ -145,11 +145,12 @@ async def generate_answer(client, *, question: str, facts: list[Fact], context: 
             system=SYSTEM_PROMPT,
             messages=[{"role": "user", "content": content}],
         )
+        raw = resp.content[0].text if resp.content else ""
     except Exception as exc:
         log(f"Couldn't reach Claude: {exc}", "error")
         return None
 
-    parsed = parse_answer(resp.content[0].text)
+    parsed = parse_answer(raw)
     if parsed is None:
         log("Stayed silent — model returned NO_ANSWER", "skip")
         return None
