@@ -86,3 +86,88 @@ def _log_suppressed(channel_name: str, question: str, answer: str, reason: str) 
         "answer": (answer or "")[:1000],
         "reason": reason[:300],
     })
+
+
+_VERIFIER_SYSTEM = (
+    "You are a strict grounding verifier for a support bot. You are given SOURCES "
+    "and a proposed ANSWER. Decide whether EVERY specific, checkable claim in the "
+    "ANSWER is directly supported by the SOURCES.\n"
+    "Ignore greetings, tone, and formatting. A claim is UNGROUNDED if it states a "
+    "concrete fact (number, distance, rule, item, location, cause, fix, date, name) "
+    "that does not appear in the SOURCES.\n"
+    "Reply on ONE line: 'GROUNDED' if all claims are supported, otherwise "
+    "'UNGROUNDED: <short reason naming the unsupported claim>'."
+)
+
+
+async def verify_grounded(client, facts_text: str, answer_text: str) -> tuple[bool, str]:
+    """Independent check that the answer only states what the facts state.
+    Fails OPEN on API errors so an outage can never silence a legitimate answer."""
+    try:
+        resp = await client.messages.create(
+            model=config.ANSWER_MODEL,
+            max_tokens=120,
+            system=_VERIFIER_SYSTEM,
+            messages=[{"role": "user", "content":
+                       f"SOURCES:\n{facts_text[:12000]}\n\n---\nANSWER:\n{answer_text[:2000]}"}],
+        )
+        verdict = resp.content[0].text.strip()
+        return verdict.upper().startswith("GROUNDED"), verdict
+    except Exception as exc:
+        return True, f"verifier-error: {exc}"
+
+
+async def generate_answer(client, *, question: str, facts: list[Fact], context: str,
+                          image_blocks: list | None = None, prior: dict | None = None,
+                          channel_name: str = "unknown") -> Answer | None:
+    """The single answer path. Returns None to stay silent (all results by value —
+    never stash state on function attributes)."""
+    numbered = "\n".join(f"[{f.id}] {f.tag}: {f.text}" for f in facts) or "(no facts)"
+
+    parts = [f"FACTS:\n{numbered}\n"]
+    if prior:
+        parts.append("This is a follow-up to your previous answer.\n"
+                     f"Previous question: {prior['question']}\n"
+                     f"Your previous answer: {prior['answer']}\n")
+    parts.append(f"Recent conversation in #{channel_name} (newest last):\n{context}\n")
+    parts.append(f"Player's question: \"{question or '(screenshot only)'}\"")
+    user_text = "\n".join(parts)
+
+    if image_blocks:
+        content: list | str = [*image_blocks, {"type": "text", "text": user_text}]
+    else:
+        content = user_text
+
+    try:
+        resp = await client.messages.create(
+            model=config.ANSWER_MODEL,
+            max_tokens=config.ANSWER_MAX_TOKENS,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": content}],
+        )
+    except Exception as exc:
+        log(f"Couldn't reach Claude: {exc}", "error")
+        return None
+
+    parsed = parse_answer(resp.content[0].text)
+    if parsed is None:
+        log("Stayed silent — model returned NO_ANSWER", "skip")
+        return None
+    text, cited = parsed
+
+    if not verify_citations(cited, {f.id for f in facts}, bool(image_blocks)):
+        log("Suppressed — citation check failed", "warn")
+        _log_suppressed(channel_name, question, text, "citation-check-failed")
+        return None
+
+    # Grounding is ENFORCED. Screenshot-based answers (IMG cited) skip it because the
+    # verifier cannot see the image — the citation check already bound them to a real image.
+    grounded = True
+    if "IMG" not in cited:
+        grounded, verdict = await verify_grounded(client, numbered, text)
+        if not grounded:
+            log(f"Suppressed — grounding check failed: {verdict[:100]}", "warn")
+            _log_suppressed(channel_name, question, text, verdict)
+            return None
+
+    return Answer(text=text, cited=cited, grounded=grounded)
