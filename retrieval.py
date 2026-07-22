@@ -43,7 +43,7 @@ KEYWORD_EXPANSIONS: dict[str, set[str]] = {
     "vehicle":   {"vehicles", "car", "heli", "aircraft"},
 }
 
-_HEX_RE = re.compile(r"0x[0-9a-fA-F]+")
+_HEX_RE = re.compile(r"0[xX][0-9a-fA-F]+")
 
 
 def extract_keywords(text: str) -> tuple[set[str], set[str], set[str]]:

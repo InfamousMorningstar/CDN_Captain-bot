@@ -4,8 +4,6 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-import anthropic
-
 import config
 import db
 from knowledge import Fact
@@ -161,10 +159,12 @@ async def generate_answer(client, *, question: str, facts: list[Fact], context: 
         _log_suppressed(channel_name, question, text, "citation-check-failed")
         return None
 
-    # Grounding is ENFORCED. Screenshot-based answers (IMG cited) skip it because the
-    # verifier cannot see the image — the citation check already bound them to a real image.
+    # Grounding is ENFORCED. Only an IMG-only citation list skips it, because the
+    # verifier cannot see the image — the citation check already bound that case to a
+    # real attached image. Any answer that also cites a numbered fact (mixed citations)
+    # still runs the verifier against those facts.
     grounded = True
-    if "IMG" not in cited:
+    if any(c != "IMG" for c in cited):
         grounded, verdict = await verify_grounded(client, numbered, text)
         if not grounded:
             log(f"Suppressed — grounding check failed: {verdict[:100]}", "warn")

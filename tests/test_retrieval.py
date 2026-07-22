@@ -41,3 +41,8 @@ def test_short_words_do_not_substring_match():
     # 'rep' must not match inside 'report' etc. — retrieval uses word tokens
     got = retrieve("rep unlock", FACTS)
     assert any(f.id == 2 for f in got)
+
+
+def test_uppercase_hex_code_extracts():
+    _, _, hexes = extract_keywords("error 0X00040010 help")
+    assert "0x00040010" in hexes

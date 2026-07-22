@@ -129,3 +129,27 @@ def test_generate_answer_empty_response_is_silent():
     ans = asyncio.run(answering.generate_answer(
         client, question="q?", facts=FACTS, context="(none)"))
     assert ans is None
+
+
+def test_mixed_citation_still_runs_verifier(tmp_path, monkeypatch):
+    import config, answering
+    monkeypatch.setattr(config, "SUPPRESSED_LOG_PATH", str(tmp_path / "s.jsonl"))
+    client = FakeClient([
+        "Do X.\nFACTS: [2, IMG]",
+        "UNGROUNDED: nope",
+    ])
+    img = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aa"}}]
+    ans = asyncio.run(answering.generate_answer(
+        client, question="q?", facts=FACTS, context="(none)", image_blocks=img))
+    assert ans is None                       # mixed citations are verified — and failed
+    assert len(client.messages.calls) == 2
+
+
+def test_img_only_citation_skips_verifier():
+    import answering
+    client = FakeClient(["Read the error in your screenshot: do X.\nFACTS: [IMG]"])
+    img = [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": "aa"}}]
+    ans = asyncio.run(answering.generate_answer(
+        client, question="q?", facts=FACTS, context="(none)", image_blocks=img))
+    assert ans is not None and ans.grounded
+    assert len(client.messages.calls) == 1   # no verifier call
