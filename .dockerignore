@@ -1,0 +1,11 @@
+.env
+.env.*
+.git/
+__pycache__/
+*.db
+.superpowers/
+.remember/
+docs/
+tests/
+*.jsonl
+.claude/
