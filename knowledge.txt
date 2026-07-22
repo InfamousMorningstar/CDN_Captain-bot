@@ -1,0 +1,106 @@
+# ─────────────────────────────────────────────────────────────────────────────
+#  CDN_Captain Knowledge Base
+#  Edit this file, then restart the bot with: docker restart cdn-captain
+#  Lines starting with # are comments and are ignored by the bot.
+#
+#  FORMAT: TAG: fact
+#  One fact per line. Keep each line specific and concrete.
+#  The bot answers questions ONLY from facts listed here — if it's not here, it
+#  will stay silent rather than guess.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ── HOW TO JOIN ───────────────────────────────────────────────────────────────
+JOIN: Step 1 = purchase DayZ on Steam
+JOIN: Step 2 = download DZSA Launcher for easy mod management and server discovery
+JOIN: Step 3 = search for CDN in the launcher filter to see the full list of modded PvE servers
+
+# ── SERVER LIST & IPs ─────────────────────────────────────────────────────────
+# Add your servers here — one line per server
+# SERVER_IP: CDN Banov SciFi — IP: xxx.xxx.xxx.xxx:xxxx — 60 slots — PvE
+
+# ── WIPE SCHEDULE ─────────────────────────────────────────────────────────────
+# WIPE: All CDN servers wipe approximately every 3 months (~90 days)
+# WIPE: A wipe clears all player bases, vehicles, stashed loot, and character data
+# WIPE: Wipe announcements are posted in #announcements
+
+# ── SERVER RULES ─────────────────────────────────────────────────────────────
+RULE: No PvP on standard servers — HC (Hardcore) servers allow territory PvP and raiding
+RULE: No building within 1000 metres of any trader
+RULE: Toxicity, harassment, and racism are not welcome on CDN servers
+RULE: Do not camp traders or spawn areas
+RULE: Do not exploit bugs or duplication glitches — report them to staff instead
+RULE: Do not DM admins — open a ticket in the Discord ticket channel instead
+RULE: Do not tag or ping admins in chat — they will not respond to direct pings
+
+# ── BASE BUILDING ─────────────────────────────────────────────────────────────
+BASE: No building within 1000 metres of any trader
+BASE: BLR (BuilderLite Reloaded) is the base building system on standard servers
+FAQ: Q: How do I take down a BLR house? A: Claim the house, make sure it is completely empty, equip a hammer, stand outside facing the door, look at it, and select the Fold option
+
+# ── TRADERS ───────────────────────────────────────────────────────────────────
+TRADER: Traders are safe zones — PvP is not allowed inside or around traders
+# TRADER: Add trader locations per map here
+
+# ── DROPS / AIRDROPS ──────────────────────────────────────────────────────────
+# "Drops" and "airdrops" are the same thing — a loot spawn on the map, NOT a
+# separate system. These facts replace the bot's earlier (incorrect) claim that
+# vehicles drop from airdrops, per community correction.
+DROPS: Airdrops are drops — they are loot spawns that appear on the map, not a separate system
+DROPS: Airdrop contents = gear, medical supplies, and sometimes high-value loot such as GPUs and bitcoin-farm components
+DROPS: Airdrops do NOT contain vehicles
+DROPS: If Spiders (or similar special AI) appear at a drop, it signals a higher-value airdrop
+
+# ── REPUTATION SYSTEM (SCI-FI BANOV) ─────────────────────────────────────────
+REP: Vehicle Trader unlocks at 10,000 rep
+REP: Aircraft Trader unlocks at 20,000 rep
+REP: Special Trader unlocks at 25,500 rep
+REP: Black Market unlocks at 50,000 rep
+REP: Zombie kill = +10 rep on Sci-fi Banov
+REP: Rainbow Bear kill = +100 rep on Sci-fi Banov
+
+# ── SCI-FI BANOV SERVER ───────────────────────────────────────────────────────
+SCIFI: Yrtsk Tier 1 weapons (available at Trader T1-3): Armadilo, Boar, Claw, Grizzly, Hedgehog, Puma, Wolverine
+SCIFI: Yrtsk Tier 4 weapons (Blackmarket T4-5 only): A White Whisper, All of Existence, Bars, Corw, Eagle, Fang
+
+# ── DUNGEON RULES ─────────────────────────────────────────────────────────────
+DUNGEON: Admin Teleport Both Ways — players cannot enter or exit on their own
+DUNGEON: An admin must teleport you in and out of the dungeon
+DUNGEON: Die inside the dungeon = permanent death, no respawns, no revives
+DUNGEON: Teammates may loot your gear after you die inside the dungeon
+DUNGEON: Entering without an admin present = permanent ban
+DUNGEON: Start = announce "Starting dungeon run" in chat before entering
+DUNGEON: Finish = announce "Dungeon completed [Name]" in chat on completion
+
+# ── ERROR CODES ───────────────────────────────────────────────────────────────
+ERROR: 0x00040010 = ADMIN_KICK — player was removed by a server administrator or admin system
+ERROR: 0x00040010 common cause = manual admin kick for rule violation
+ERROR: 0x00040010 common cause = automated pre-restart player kick routine
+ERROR: 0x00040010 fix = if a restart was announced, wait and reconnect after the server is back up
+ERROR: 0x00040010 fix = if unexpected, review server rules or open a ticket
+
+ERROR: 0x00040093 cause = mod mismatch or corrupted mod files
+ERROR: 0x00040093 fix = fully close DayZ and Steam, then reopen Steam and wait for Workshop updates
+ERROR: 0x00040093 fix = clear the Steam download cache via Steam menu > Settings > Downloads > Clear Download Cache
+ERROR: 0x00040093 fix = unsubscribe from the mod then resubscribe to force a clean re-download
+
+# Add more error codes here as players report them
+
+# ── DONATIONS & STORE ─────────────────────────────────────────────────────────
+# DONATION: Add store items, prices, and perks here
+# DONATION: Visit cdndayz.com/store for the full list of available items
+
+# ── MODS ─────────────────────────────────────────────────────────────────────
+MOD: CDN Banov SciFi runs 44 mods including AgricultureCore, CBD Sci-Fi power generator, Code Lock, AJs Creatures V2
+
+# ── FREQUENTLY ASKED QUESTIONS ───────────────────────────────────────────────
+FAQ: Q: Is PvP allowed? A: Not on standard servers. HC servers allow territory PvP and raiding
+FAQ: Q: How do I join the server? A: Purchase DayZ on Steam, download DZSA Launcher, search CDN in the filter
+FAQ: Q: Where do I report a bug? A: Open a ticket in the Discord ticket channel — do not DM admins
+FAQ: Q: Where do I appeal a ban? A: Open a ticket in the Discord ticket channel
+FAQ: Q: How do I contact staff? A: Open a ticket in the ticket channel — do not ping or DM admins directly
+FAQ: Q: What is in an airdrop / drop? A: Gear, medical supplies, and sometimes high-value loot like GPUs and bitcoin-farm components. Airdrops do not contain vehicles. Spiders showing up signals a higher-value drop
+
+# ── GENERAL INFO ─────────────────────────────────────────────────────────────
+GENERAL: CDN DayZ is a community of modded PvE DayZ servers
+GENERAL: The community website is cdndayz.com
+GENERAL: In-game issues, bans, or disputes should be directed to the CDN DayZ moderation team via the Discord ticket channel
