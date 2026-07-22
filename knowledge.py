@@ -176,3 +176,33 @@ async def last_crawl_time(db_path: str | None = None) -> float | None:
         async with db.execute("SELECT MAX(last_crawled) FROM pages WHERE url LIKE 'http%'") as cur:
             row = await cur.fetchone()
     return row[0] if row and row[0] else None
+
+
+def compute_next_wipe(fact_list: list[Fact], today: date) -> str | None:
+    """Compute the next wipe date IN PYTHON from WIPE facts.
+
+    Needs both an interval ('every N days') and an anchor ('last wipe YYYY-MM-DD')
+    somewhere in the WIPE facts. Returns a human line, or None when not derivable —
+    the model must never do date math itself.
+    """
+    interval: int | None = None
+    last: date | None = None
+    for f in fact_list:
+        if f.tag != "WIPE":
+            continue
+        m = re.search(r"every\s*~?\s*(\d+)\s*days", f.text, re.IGNORECASE)
+        if m:
+            interval = int(m.group(1))
+        m = re.search(r"last wipe\D*?(\d{4}-\d{2}-\d{2})", f.text, re.IGNORECASE)
+        if m:
+            try:
+                last = date.fromisoformat(m.group(1))
+            except ValueError:
+                pass
+    if not interval or not last:
+        return None
+    nxt = last
+    while nxt <= today:
+        nxt += timedelta(days=interval)
+    return (f"The next wipe is approximately {nxt.isoformat()} "
+            f"(servers wipe every ~{interval} days; last wipe was {last.isoformat()})")

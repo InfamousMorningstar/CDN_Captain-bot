@@ -71,3 +71,38 @@ def test_manual_facts_survive_missing_file(tmp_path):
         assert await k.load_manual_facts(db_path=dbp, knowledge_file=str(kf)) == 0
         assert await k.reload_facts(db_path=dbp) == 0
     asyncio.run(run())
+
+
+def _f(tag, text):
+    import knowledge as k
+    return k.Fact(id=1, tag=tag, text=text, source="knowledge.txt", manual=True)
+
+
+def test_compute_next_wipe_derivable():
+    import knowledge as k
+    from datetime import date
+    fl = [
+        _f("WIPE", "All CDN servers wipe approximately every 90 days"),
+        _f("WIPE", "Last wipe: 2026-06-14"),
+    ]
+    line = k.compute_next_wipe(fl, today=date(2026, 7, 22))
+    assert "2026-09-12" in line          # 2026-06-14 + 90 days
+    assert "90" in line and "2026-06-14" in line
+
+
+def test_compute_next_wipe_rolls_forward():
+    import knowledge as k
+    from datetime import date
+    fl = [
+        _f("WIPE", "wipes every 30 days"),
+        _f("WIPE", "last wipe 2026-01-01"),
+    ]
+    line = k.compute_next_wipe(fl, today=date(2026, 7, 22))
+    assert "2026-07-30" in line          # first multiple of 30 days after today
+
+
+def test_compute_next_wipe_not_derivable():
+    import knowledge as k
+    from datetime import date
+    assert k.compute_next_wipe([_f("WIPE", "wipes happen sometimes")], date(2026, 7, 22)) is None
+    assert k.compute_next_wipe([_f("RULE", "no pvp")], date(2026, 7, 22)) is None
